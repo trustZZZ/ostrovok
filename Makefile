@@ -1,12 +1,12 @@
-.PHONY: dev seed test clean
+.PHONY: dev seed test clean db fetch fe-dev be-dev
 
 # Запуск всех сервисов
 dev:
 	docker compose up --build
 
-# Загрузка демо-данных и precompute фич
+# Загрузка демо-данных (локально; требует: pip install -r scripts/requirements.txt)
 seed:
-	docker compose exec backend python -m scripts.seed_db
+	python scripts/fetch_data.py
 
 # Запуск тестов
 test:
@@ -21,13 +21,13 @@ clean:
 db:
 	docker compose up db -d
 
-# Fetch данных из OSM
+# Fetch данных из OSM (локально)
 fetch:
-	docker compose exec backend python -m scripts.fetch_data
+	python scripts/fetch_data.py
 
-# Frontend dev
+# Frontend dev (исходники в корне репозитория)
 fe-dev:
-	cd frontend && npm run dev
+	npm run dev
 
 # Backend dev
 be-dev:

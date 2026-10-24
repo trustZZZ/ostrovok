@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "seed": "python scripts/fetch_data.py"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",

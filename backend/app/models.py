@@ -50,6 +50,7 @@ class HotelierQuestion(Base):
     answer_raw = Column(Text)
     answer_parsed = Column(JSONB)
     status = Column(String, default="pending")  # pending | answered | disputed
+    thread_id = Column(String, index=True, nullable=True)  # thread_id LangGraph для возобновления потока
     asked_at = Column(DateTime, server_default="now()")
     answered_at = Column(DateTime)
     

@@ -1,41 +1,40 @@
 """
-API роутер агента — SSE стриминг шагов.
+API роутер агента — реальный SSE стриминг шагов LangGraph.
 """
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-import asyncio
 import json
+from app.agents.graph import agent_graph  # Импортируем наш граф
 
 router = APIRouter()
 
+# Имена узлов агентного графа
+NODE_NAMES = ("geo", "open_data", "conflicts", "ask", "wait", "parse", "finalize")
+
+
 @router.get("/agent/{thread_id}/stream")
 async def stream_agent(thread_id: str):
-    """
-    SSE стриминг шагов агентного графа в реальном времени.
-    """
+    """SSE стриминг реальных шагов агентного графа."""
     async def event_generator():
-        # В реальности — подписка на обновления LangGraph
-        steps = [
-            {"node": "geo", "status": "started", "message": "🛰️ Запуск GIS-инструментов..."},
-            {"node": "geo", "status": "done", "message": "✅ sunset_view: виден с 3 этажа"},
-            {"node": "geo", "status": "done", "message": "✅ noise_score: 22/100"},
-            {"node": "geo", "status": "done", "message": "✅ walk_to_sea: 4 мин"},
-            {"node": "open_data", "status": "started", "message": "🌐 Загрузка открытых данных..."},
-            {"node": "open_data", "status": "done", "message": "✅ Wikidata: историческое здание"},
-            {"node": "open_data", "status": "done", "message": "✅ Open-Meteo: климат загружен"},
-            {"node": "conflicts", "status": "started", "message": "🔍 Поиск конфликтов..."},
-            {"node": "conflicts", "status": "done", "message": "⚠️ Конфликт: шум vs позиционирование"},
-            {"node": "ask", "status": "done", "message": "📋 Вопрос отправлен отельеру"},
-            {"node": "finalize", "status": "done", "message": "✅ 6 характеристик сохранено в БД"},
-        ]
-        
-        for step in steps:
-            yield f"data: {json.dumps(step)}\n\n"
-            await asyncio.sleep(0.5)
-        
-        yield f"data: {json.dumps({'node': 'END', 'status': 'done', 'message': '🏁 Завершено'})}\n\n"
-    
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-    )
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # astream_events отдает все события выполнения графа
+        async for event in agent_graph.astream_events({}, config=config, version="v2"):
+            kind = event["event"]
+            node_name = event.get("name", "")
+
+            # Фильтруем только начало и конец выполнения узлов
+            if kind == "on_chain_start" and node_name in NODE_NAMES:
+                yield f"data: {json.dumps({'node': node_name, 'status': 'started', 'message': f'⏳ Запуск {node_name}...'})}\n\n"
+
+            elif kind == "on_chain_end" and node_name in NODE_NAMES:
+                # Можно вытащить реальные логи из состояния, если они там есть
+                yield f"data: {json.dumps({'node': node_name, 'status': 'done', 'message': f'✅ {node_name} завершен'})}\n\n"
+
+            # Специальная обработка прерывания (wait)
+            elif kind == "on_custom_event" and node_name == "interrupt":
+                yield f"data: {json.dumps({'node': 'wait', 'status': 'interrupted', 'message': '⏸️ Ожидание ответа отельера', 'data': event.get('data')})}\n\n"
+
+        yield f"data: {json.dumps({'node': 'END', 'status': 'done', 'message': '🏁 Обработка завершена'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")

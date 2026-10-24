@@ -58,8 +58,9 @@ async def get_route(route_id: int, db: AsyncSession = Depends(get_db)):
             "id": hotel.id,
             "name": hotel.name,
             "address": hotel.address,
-            "lat": float(hotel.geom.x) if hotel.geom else None,
-            "lon": float(hotel.geom.y) if hotel.geom else None,
+            # Point(x, y): x — долгота, y — широта
+            "lat": float(hotel.geom.y) if hotel.geom else None,
+            "lon": float(hotel.geom.x) if hotel.geom else None,
             "features": [
                 {
                     "key": f.feature_key,

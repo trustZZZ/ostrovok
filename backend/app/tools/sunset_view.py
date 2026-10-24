@@ -41,6 +41,10 @@ def compute_sunset_view(
     """
     Главная функция: вычисляет вид на закат для конкретного отеля.
     """
+    # Геометрии зданий может не быть (например, заглушка load_buildings возвращает None)
+    if buildings_gdf is None:
+        buildings_gdf = gpd.GeoDataFrame(geometry=[])
+
     observer_point = Point(hotel_lon, hotel_lat)
     
     # Средний азимут заката для 21-го июня (летнее солнцестояние)

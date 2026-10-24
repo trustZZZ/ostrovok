@@ -1,0 +1,4 @@
+-- Демо-данные загружаются скриптом scripts/fetch_data.py (make fetch)
+-- Таблицы создаются автоматически при старте backend (SQLAlchemy create_all).
+-- Этот файл оставлен пустым намеренно: он монтируется в
+-- /docker-entrypoint-initdb.d/seed.sql контейнера PostgreSQL.
