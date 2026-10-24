@@ -5,8 +5,8 @@ services:
       POSTGRES_USER: routely
       POSTGRES_PASSWORD: routely
       POSTGRES_DB: routely
-    ports:
-      - "5432:5432"
+    expose:
+      - "5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./data/seed.sql:/docker-entrypoint-initdb.d/seed.sql
@@ -21,8 +21,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     restart: unless-stopped
-    ports:
-      - "8001:8000"
+    expose:
+      - "8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://routely:routely@db:5432/routely
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -41,7 +41,7 @@ services:
       context: .
       dockerfile: ./frontend/Dockerfile
     ports:
-      - "3000:80"
+      - "8000:80"
     depends_on:
       - backend
 

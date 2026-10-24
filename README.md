@@ -97,8 +97,10 @@ cd routely-ostrovok
 #   USE_MOCK_LLM=0            (1 — без ключа, работает мок-LLM)
 docker compose up --build
 make seed             # загрузка демо-данных (локально: python scripts/fetch_data.py)
-open http://localhost:3000
+open http://localhost:8000
 ```
+
+> **Порты:** наружу публикуется только **8000** (nginx: фронтенд + прокси `/api` → бэкенд). PostgreSQL (`5432`), бэкенд (`8000`) и dev-сервер Vite (`3000`) наружу **не пробрасываются** и доступны только внутри docker-сети.
 
 ### Windows (Git Bash): подготовка `make` и демо-данных
 
