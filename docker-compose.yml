@@ -22,7 +22,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://routely:routely@db:5432/routely
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
