@@ -2,7 +2,17 @@
 SQLAlchemy модели базы данных.
 PostgreSQL + PostGIS + pgvector
 """
-from sqlalchemy import Column, Integer, BigInteger, String, Float, DateTime, ForeignKey, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship, DeclarativeBase
 from geoalchemy2 import Geometry
@@ -37,7 +47,12 @@ class HotelFeature(Base):
     computed_at = Column(DateTime, server_default="now()")
     expires_at = Column(DateTime)
     raw_evidence = Column(JSONB)  # логи вычислений для объяснимости
-    
+    # Противоречие источников: если два источника дали разные значения,
+    # обе строки помечаются disputed, а disputed_with хранит все варианты
+    # для разбора в кабинете отельера.
+    disputed = Column(Boolean, default=False)
+    disputed_with = Column(JSONB)
+
     hotel = relationship("Hotel", back_populates="features")
 
 class HotelierQuestion(Base):

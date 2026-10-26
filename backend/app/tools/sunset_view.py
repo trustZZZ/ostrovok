@@ -96,6 +96,10 @@ def compute_sunset_view(
         buildings_gdf = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
 
     observer = Point(hotel_lon, hotel_lat)
+    # Своё здание не затеняет вид из собственного окна: точка отеля лежит
+    # внутри его контура, и луч начинается уже за стеной наблюдателя.
+    own_building = bool(buildings_gdf.geometry.contains(observer).any()) if not buildings_gdf.empty else False
+    ray_buildings = buildings_gdf[~buildings_gdf.geometry.contains(observer)] if own_building else buildings_gdf
     hotel_elevation = _elevation_at(hotel_lon, hotel_lat)
     dem_ok = hotel_elevation is not None
     base_elevation = hotel_elevation or 0.0
@@ -111,12 +115,12 @@ def compute_sunset_view(
         azimuths.append(azimuth)
         ray = build_ray(observer, azimuth, distance_m=RAY_LENGTH_M)
 
-        if not buildings_gdf.empty:
-            on_ray = buildings_gdf[buildings_gdf.geometry.intersects(ray.buffer(0.00005))]
+        if not ray_buildings.empty:
+            on_ray = ray_buildings[ray_buildings.geometry.intersects(ray.buffer(0.00005))]
             buildings_on_ray = max(buildings_on_ray, int(on_ray.shape[0]))
 
         terrain_blocks = check_terrain_dem(ray, dem_path) if dem_ok else (lambda _height: False)
-        buildings_block = check_buildings(ray, buildings_gdf)
+        buildings_block = check_buildings(ray, ray_buildings)
 
         floor_found = None
         for floor in range(1, total_floors + 1):
@@ -135,6 +139,10 @@ def compute_sunset_view(
         buildings_in_buffer = int(
             buildings_gdf[buildings_gdf.geometry.intersects(observer.buffer(0.01))].shape[0]
         )
+
+    # Сколько зданий вокруг реально имеют высоту из OSM: без этого нельзя
+    # отличить расчёт по настоящей застройке от расчёта по константе 9 м.
+    buildings_with_height = _count_known_height(buildings_gdf, observer)
 
     confidence = _confidence(dem_ok, buildings_in_buffer, buildings_gdf.empty)
 
@@ -160,12 +168,33 @@ def compute_sunset_view(
             "buildings_in_buffer": buildings_in_buffer,
             "buildings_on_ray": buildings_on_ray,
             "buildings_total": int(len(buildings_gdf)),
-            "building_height_source": "OSM levels/height, иначе 9 м по умолчанию",
+            # Здание отеля исключено из проверки луча — иначе оно затеняло бы
+            # вид из собственного окна.
+            "own_building_excluded": own_building,
+            "buildings_with_known_height": buildings_with_height,
+            "building_height_source": (
+                "OSM PBF building:levels / height"
+                if buildings_with_height
+                else f"высота неизвестна — {DEFAULT_BUILDING_HEIGHT_M:.0f} м по умолчанию"
+            ),
             "floors_by_month": per_month,
             "ray_length_km": RAY_LENGTH_M / 1000.0,
             "los_model": "линия визирования к горизонту на 0 м",
         },
     )
+
+
+def _count_known_height(buildings_gdf: gpd.GeoDataFrame, observer: Point) -> int:
+    """Здания в радиусе ~1 км, у которых высота известна из OSM."""
+    if buildings_gdf is None or buildings_gdf.empty:
+        return 0
+    columns = [column for column in ("levels", "height") if column in buildings_gdf.columns]
+    if not columns:
+        return 0
+    nearby = buildings_gdf[buildings_gdf.geometry.intersects(observer.buffer(0.01))]
+    if nearby.empty:
+        return 0
+    return int(nearby[columns].notna().any(axis=1).sum())
 
 
 def _confidence(dem_ok: bool, buildings_in_buffer: int, no_buildings: bool) -> float:

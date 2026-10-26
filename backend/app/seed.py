@@ -10,6 +10,7 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.feature_registry import get_feature
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,17 @@ async def ensure_schema(engine) -> None:
     statements = (
         "ALTER TABLE hotel_features ADD COLUMN IF NOT EXISTS disputed BOOLEAN DEFAULT FALSE",
         "ALTER TABLE hotel_features ADD COLUMN IF NOT EXISTS disputed_with JSONB",
+        # Раньше инструмент климата подписывал успех иначе, чем ошибку
+        # («Open-Meteo (ERA5, 2019-2024)» против «Open-Meteo»), из-за чего
+        # в таблице копились дубли одной характеристики. Приводим имя к
+        # каноническому и оставляем по одной строке на источник: это
+        # инвариант, на который опирается детекция противоречий.
+        "UPDATE hotel_features SET source = 'Open-Meteo' WHERE source LIKE 'Open-Meteo (%'",
+        (
+            "DELETE FROM hotel_features a USING hotel_features b "
+            "WHERE a.hotel_id = b.hotel_id AND a.feature_key = b.feature_key "
+            "AND a.source = b.source AND a.id < b.id"
+        ),
     )
     async with engine.begin() as conn:
         for statement in statements:
@@ -107,6 +119,7 @@ async def seed_hotels(session: AsyncSession, path: str | None = None) -> int:
     }
 
     touched = 0
+    seen = {item.get("osm_id") for item in payload}
     for item in payload:
         osm_id = item.pop("osm_id")
         if osm_id is None:
@@ -121,9 +134,29 @@ async def seed_hotels(session: AsyncSession, path: str | None = None) -> int:
                 setattr(row, field, value)
         touched += 1
 
+    # Файл отелей — источник истины для демо-набора: гостиницы, которых в нём
+    # больше нет, удаляются вместе с характеристиками. Иначе после смены
+    # набора в выдаче остались бы отели, которых не существует.
+    for osm_id, row in known.items():
+        if osm_id in seen:
+            continue
+        logger.info("hotel удалён: %s (osm_id %s) — его нет в файле отелей", row.name, osm_id)
+        await session.delete(row)
+        touched += 1
+
     await session.commit()
     logger.info("hotels: синхронизировано %s записей", touched)
     return touched
+
+
+def _comparable(feature_key: str, value):
+    """Сопоставимая часть значения: для сравнения источников между собой.
+
+    Полные структуры у источников разные (геоданные кладут from_floor и months,
+    отельер — только факт), поэтому сравниваем по value_field из реестра.
+    """
+    spec = get_feature(feature_key)
+    return spec.extract(value) if spec else value
 
 
 async def upsert_feature(
@@ -140,7 +173,9 @@ async def upsert_feature(
     """Заменяет значение характеристики от того же источника (одна строка на источник).
 
     Разные источники сосуществуют — это позволяет замечать противоречия:
-    геоданные и ответ отельера хранятся отдельными записями.
+    геоданные и ответ отельера хранятся отдельными записями. Если их значения
+    расходятся, обе строки помечаются ``disputed``, а ``disputed_with`` хранит
+    все варианты: разбирается это в кабинете отельера, а не замалчивается.
     """
     from app.models import HotelFeature
 
@@ -163,3 +198,47 @@ async def upsert_feature(
             expires_at=datetime.utcnow() + timedelta(days=ttl_days),
         )
     )
+    await session.flush()
+
+    rows = (
+        (
+            await session.execute(
+                select(HotelFeature).where(
+                    HotelFeature.hotel_id == hotel_id,
+                    HotelFeature.feature_key == feature_key,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    meaningful = [row for row in rows if (row.confidence or 0) > 0]
+    variants = {
+        json.dumps(_comparable(feature_key, row.value), sort_keys=True, ensure_ascii=False, default=str)
+        for row in meaningful
+    }
+    disputed = len(variants) > 1
+
+    snapshot = None
+    if disputed:
+        snapshot = [
+            {
+                "source": row.source,
+                "confidence": round(float(row.confidence or 0), 3),
+                "value": _comparable(feature_key, row.value),
+            }
+            for row in meaningful
+        ]
+
+    for row in rows:
+        row.disputed = disputed
+        row.disputed_with = snapshot
+
+    if disputed:
+        logger.info(
+            "противоречие источников: отель %s, «%s», вариантов %s",
+            hotel_id,
+            feature_key,
+            len(variants),
+        )

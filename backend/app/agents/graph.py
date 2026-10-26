@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Any, Optional, TypedDict
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -70,12 +71,47 @@ def _value_key(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False)
 
 
+async def _should_persist(db, hotel_id: int, key: str, payload: dict) -> bool:
+    """Решает, писать ли результат в БД.
+
+    Осознанное «нет данных» (пляжа нет в радиусе) писать нужно — это факт
+    об отеле. Технический сбой сети писать нельзя: иначе один таймаут
+    затирает уже собранное значение, и отель теряет характеристику,
+    которую мы до этого успешно посчитали.
+    """
+    from app.models import HotelFeature
+
+    value = payload.get("value")
+    evidence = payload.get("evidence") or {}
+    no_data = isinstance(value, dict) and value.get("status") == "no_data"
+    if not no_data or not evidence.get("error"):
+        return True
+
+    row = (
+        await db.execute(
+            select(HotelFeature).where(
+                HotelFeature.hotel_id == hotel_id,
+                HotelFeature.feature_key == key,
+                HotelFeature.source == payload.get("source"),
+            )
+        )
+    ).scalars().first()
+    if row is None:
+        return True
+    # Прошлое значение сохраняем, только пока оно не просрочено:
+    # просроченное всё равно надо заменить, даже если сейчас сбой.
+    return bool(row.expires_at and row.expires_at < datetime.utcnow())
+
+
 async def node_plan(state: AgentState) -> dict:
     """Решает, какие характеристики собирать и какими инструментами."""
     plan: list[dict[str, Any]] = []
     audit: list[dict[str, Any]] = []
 
-    for spec in select_features(target="hotel"):
+    # Планируем характеристики всех уровней: и отельные, и номерные. У номерных
+    # инструментов нет по определению — какие категории выходят на запад или
+    # во двор, знает только отельер, поэтому они честно уходят в вопрос.
+    for spec in select_features():
         available = [name for name in spec.tools if get_tool(name) is not None]
         missing = [name for name in spec.tools if name not in available]
 
@@ -86,10 +122,18 @@ async def node_plan(state: AgentState) -> dict:
         else:
             reason = f"выбраны инструменты: {', '.join(available)}"
 
-        audit.append({"feature": spec.key, "selected_tools": available, "reason": reason})
+        audit.append(
+            {
+                "feature": spec.key,
+                "target": spec.target,
+                "selected_tools": available,
+                "reason": reason,
+            }
+        )
         plan.append(
             {
                 "key": spec.key,
+                "target": spec.target,
                 "tools": available,
                 "question": spec.question,
                 "ttl_days": spec.ttl_days,
@@ -159,6 +203,13 @@ async def node_save_confident(state: AgentState) -> dict:
         for key, payload in (state.get("features") or {}).items():
             task = plan_by_key.get(key, {})
             if payload.get("source") is None:
+                continue
+            if not await _should_persist(db, state["hotel_id"], key, payload):
+                logger.info(
+                    "отель %s, «%s»: технический сбой, оставляю прошлое значение",
+                    state["hotel_id"],
+                    key,
+                )
                 continue
             await upsert_feature(
                 db,
@@ -317,6 +368,13 @@ async def node_finalize(state: AgentState) -> dict:
     async with async_session() as db:
         for key, payload in (state.get("features") or {}).items():
             task = plan_by_key.get(key, {})
+            if not await _should_persist(db, state["hotel_id"], key, payload):
+                logger.info(
+                    "отель %s, «%s»: технический сбой, оставляю прошлое значение",
+                    state["hotel_id"],
+                    key,
+                )
+                continue
             await upsert_feature(
                 db,
                 hotel_id=state["hotel_id"],

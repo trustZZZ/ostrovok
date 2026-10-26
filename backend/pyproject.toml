@@ -20,6 +20,10 @@ dependencies = [
     "rasterio",
     "osmnx",
     "pysolar",
+    # pyosmium: сбор данных (scripts/fetch_data.py) читает OSM PBF, потому что
+    # shapefile Geofabrik не содержит building:levels и height. Нужен образу,
+    # из которого запускается seed-контейнер.
+    "osmium>=3.6",
     "numpy",
     "openai",
 ]

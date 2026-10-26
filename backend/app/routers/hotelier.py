@@ -83,3 +83,82 @@ async def answer(
         "status": "processed",
         "message": "Ответ принят, агент продолжил обработку",
     }
+
+
+class ResolveRequest(BaseModel):
+    value: str | bool | float | None = None
+    note: str | None = None
+
+
+@router.post("/hotelier/{hotel_id}/resolve/{feature_key}")
+async def resolve(
+    hotel_id: int,
+    feature_key: str,
+    req: ResolveRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Отельер подтверждает или исправляет значение — противоречие снимается.
+
+    Это вторая половина требования «система замечает и разбирается»: мало
+    пометить расхождение, нужен способ его закрыть. Ответ отельера пишется
+    отдельным источником, после чего ``upsert_feature`` пересчитывает
+    ``disputed``: совпало с геоданными — расхождение снято, не совпало —
+    осталось видимым, но с явной позицией отельера.
+    """
+    from app.feature_registry import get_feature
+    from app.models import HotelFeature
+    from app.seed import upsert_feature
+
+    spec = get_feature(feature_key)
+    if spec is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Характеристика «{feature_key}» не описана в реестре",
+        )
+
+    hotel = await db.get(Hotel, hotel_id)
+    if hotel is None:
+        raise HTTPException(status_code=404, detail="Отель не найден")
+
+    # Значение приводим к форме, из которой реестр умеет достать value_field:
+    # отельер может прислать и голый true, и готовый объект.
+    value = req.value
+    if not isinstance(value, dict):
+        value = {spec.value_field: value}
+    value["confirmed_by"] = "hotelier"
+
+    await upsert_feature(
+        db,
+        hotel_id=hotel_id,
+        feature_key=feature_key,
+        value=value,
+        source="hotelier",
+        confidence=0.95,
+        evidence={"note": req.note, "resolved_by": "hotelier"},
+        ttl_days=spec.ttl_days,
+    )
+    await db.commit()
+
+    rows = (
+        await db.execute(
+            select(HotelFeature).where(
+                HotelFeature.hotel_id == hotel_id,
+                HotelFeature.feature_key == feature_key,
+            )
+        )
+    ).scalars().all()
+
+    return {
+        "status": "resolved",
+        "feature": feature_key,
+        "still_disputed": bool(rows and rows[0].disputed),
+        "rows": [
+            {
+                "source": row.source,
+                "value": spec.extract(row.value),
+                "confidence": round(float(row.confidence or 0), 3),
+                "disputed": bool(row.disputed),
+            }
+            for row in rows
+        ],
+    }

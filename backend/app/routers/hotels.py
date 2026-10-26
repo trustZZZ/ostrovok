@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from geoalchemy2.shape import to_shape
@@ -11,13 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db import get_db
-from app.models import Hotel
+from app.models import Hotel, HotelFeature
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 def _serialize_feature(row) -> dict:
+    """Характеристика вместе с её достоверностью: источник, уверенность, свежесть."""
+    now = datetime.utcnow()
     return {
         "key": row.feature_key,
         "value": row.value,
@@ -26,6 +29,10 @@ def _serialize_feature(row) -> dict:
         "raw_evidence": row.raw_evidence,
         "computed_at": row.computed_at.isoformat() if row.computed_at else None,
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        # Устаревшее значение не выбрасываем, но помечаем: его пора
+        # перепроверить, а не выдавать за актуальный факт.
+        "stale": bool(row.expires_at and row.expires_at < now),
+        "disputed": bool(row.disputed),
     }
 
 
@@ -95,6 +102,76 @@ async def enrich_all(background: BackgroundTasks, limit: int = 10, db: AsyncSess
         background.add_task(_run_agent, hotel.id, thread_id)
 
     return {"started": len(hotels), "thread_ids": thread_ids}
+
+
+@router.get("/hotels/stale")
+async def list_stale(limit: int = 50, db: AsyncSession = Depends(get_db)):
+    """Характеристики с истёкшим сроком актуальности.
+
+    ТЗ требует не только хранить дату получения, но и перепроверять
+    устаревшее: рядом могли построить дом и закрыть вид на закат,
+    а шум мог измениться после открытия трассы.
+    """
+    now = datetime.utcnow()
+    rows = (
+        await db.execute(
+            select(HotelFeature, Hotel.name)
+            .join(Hotel, Hotel.id == HotelFeature.hotel_id)
+            .where(
+                HotelFeature.expires_at.is_not(None),
+                HotelFeature.expires_at < now,
+            )
+            .order_by(HotelFeature.expires_at)
+            .limit(limit)
+        )
+    ).all()
+
+    return [
+        {
+            "hotel_id": feature.hotel_id,
+            "hotel_name": name,
+            "key": feature.feature_key,
+            "source": feature.source,
+            "confidence": feature.confidence,
+            "computed_at": feature.computed_at.isoformat() if feature.computed_at else None,
+            "expires_at": feature.expires_at.isoformat() if feature.expires_at else None,
+            "days_overdue": (now - feature.expires_at).days if feature.expires_at else None,
+        }
+        for feature, name in rows
+    ]
+
+
+@router.post("/hotels/{hotel_id}/refresh")
+async def refresh(
+    hotel_id: int,
+    background: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """Перепроверяет отель: перезапускает сбор характеристик.
+
+    Пересобираем весь набор, а не отдельные поля: инструменты идемпотентны,
+    а поменяться могли сразу несколько характеристик. Какие именно устарели —
+    возвращаем в ответе, чтобы это было видно в UI.
+    """
+    hotel = await db.get(Hotel, hotel_id, options=[selectinload(Hotel.features)])
+    if hotel is None:
+        raise HTTPException(status_code=404, detail="Отель не найден")
+
+    now = datetime.utcnow()
+    stale = [
+        row.feature_key
+        for row in hotel.features
+        if row.expires_at and row.expires_at < now
+    ]
+
+    thread_id = str(uuid.uuid4())
+    background.add_task(_run_agent, hotel_id, thread_id)
+    return {
+        "thread_id": thread_id,
+        "status": "started",
+        "stale_features": stale,
+        "message": f"Перепроверка «{hotel.name}» запущена",
+    }
 
 
 async def _run_agent(hotel_id: int, thread_id: str) -> None:

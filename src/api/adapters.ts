@@ -16,6 +16,10 @@ export interface ApiFeature {
   confidence: number;
   raw_evidence?: Record<string, any>;
   expires_at?: string | null;
+  /** Источники дали разные значения — расхождение видно в кабинете отельера. */
+  disputed?: boolean;
+  /** Срок актуальности истёк: значение требует перепроверки. */
+  stale?: boolean;
 }
 
 export interface ApiHotel {
@@ -44,6 +48,11 @@ const PRESENTATION: Record<string, { label: string; icon: string }> = {
   walk_to_sea: { label: 'Пешком до моря', icon: '🚶' },
   climate_summer: { label: 'Климат летом', icon: '☀️' },
   pet_friendly: { label: 'С питомцем', icon: '🐾' },
+  // Номерные характеристики: из открытых данных не выводятся,
+  // значения приходят только от отельера.
+  room_west_windows: { label: 'Номера на запад', icon: '🧭' },
+  room_silence: { label: 'Тихие номера', icon: '🔇' },
+  room_balcony: { label: 'Номер с балконом', icon: '🌤' },
 };
 
 const NO_DATA = 'нет данных';
@@ -79,9 +88,9 @@ function formatClimate(value: any): string {
   return `+${value.mean_july_max_c}°C в июле${warm}`;
 }
 
-function formatPet(value: any): string {
-  if (!value || value.allowed === undefined || value.allowed === null) return NO_DATA;
-  return value.allowed ? 'Да' : 'Нет';
+function formatFlag(flag: any): string {
+  if (flag === undefined || flag === null) return NO_DATA;
+  return flag ? 'Да' : 'Нет';
 }
 
 function formatValue(key: string, value: any): string {
@@ -95,7 +104,14 @@ function formatValue(key: string, value: any): string {
     case 'climate_summer':
       return formatClimate(value);
     case 'pet_friendly':
-      return formatPet(value);
+      return formatFlag(value?.allowed);
+    // Номерные характеристики — всегда булев факт от отельера.
+    case 'room_west_windows':
+      return formatFlag(value?.west_windows);
+    case 'room_silence':
+      return formatFlag(value?.soundproof);
+    case 'room_balcony':
+      return formatFlag(value?.balcony);
     default:
       if (value === null || value === undefined) return NO_DATA;
       if (typeof value === 'object') return JSON.stringify(value);
@@ -141,11 +157,21 @@ function formatDetail(feature: ApiFeature): string {
       if (evidence.period) parts.push(`по данным Open-Meteo за ${evidence.period}`);
       break;
     }
+    case 'room_west_windows':
+    case 'room_silence':
+    case 'room_balcony': {
+      if (evidence.note) parts.push(String(evidence.note));
+      break;
+    }
     default:
       break;
   }
 
   if (evidence.degraded) parts.push('данные неполные');
+  // Достоверность показываем рядом со значением: гость должен видеть,
+  // что данные расходятся или устарели, а не принимать их за факт.
+  if (feature.disputed) parts.push('источники расходятся');
+  if (feature.stale) parts.push('данные устарели, нужна перепроверка');
   parts.push(`источник: ${feature.source}`);
 
   return parts.join('; ');

@@ -2,10 +2,12 @@
 Сбор демо-данных для агентной системы Routely x Островок.
 
 Источники:
-  * Geofabrik — официальный экстракт Калининградской области (OSM, shapefile).
+  * Geofabrik — официальный экстракт Калининградской области (OSM).
     Overpass для этой задачи не годится: публичные зеркала отдают 429/502,
     а часть зеркал (например overpass.osm.ch) содержит только свою страну
     и молча вернёт пустоту.
+  * PBF того же экстракта — единственный источник реальной высоты зданий:
+    shapefile-выгрузка теряет теги building:levels и height.
   * SRTM (skadi tiles) — рельеф.
 
 Что собирается:
@@ -22,6 +24,7 @@ from __future__ import annotations
 
 import gzip
 import os
+import re
 import shutil
 import sys
 import zipfile
@@ -30,7 +33,8 @@ import geopandas as gpd
 import httpx
 import numpy as np
 import pandas as pd
-from shapely.geometry import Point, box
+from shapely import wkb as shapely_wkb
+from shapely.geometry import Point, Polygon, box
 from shapely.ops import unary_union
 
 # Область, для которой нужны DEM и гео-слои (600x600 при 3 arcsec ~ 720 КБ).
@@ -47,17 +51,26 @@ USER_AGENT = "RoutelyOstrovokHackathon/1.0 (hackathon)"
 
 GEOFABRIK_URL = "https://download.geofabrik.de/russia/kaliningrad-latest-free.shp.zip"
 
-# Реальные отели Калининграда и Зеленоградска (координаты и этажность
-# взяты из OSM). Список фиксирован, чтобы демо-набор был воспроизводим.
+# Тот же экстракт в формате PBF (~40 МБ). Shapefile-выгрузка Geofabrik не
+# содержит building:levels и height, поэтому высоты зданий берутся только
+# отсюда: без них луч заката сравнивает этаж с константой 9 м.
+GEOFABRIK_PBF_URL = "https://download.geofabrik.de/russia/kaliningrad-latest.osm.pbf"
+PBF_PATH = os.path.join(WORK_DIR, "kaliningrad-latest.osm.pbf")
+
+# Реальные гостиницы Калининграда и Зеленоградска: osm_id, координаты и
+# названия существуют в OSM, этажность при сборке перечитывается из PBF.
+# Список фиксирован, чтобы демо-набор был воспроизводим: OSM меняется,
+# а демо — нет. Значения floors здесь — снимок на момент составления списка,
+# он используется только если PBF недоступен.
 HOTELS = [
-    {"osm_id": 101, "name": "Отель Кёнигсберг", "lat": 54.7104, "lon": 20.5101, "floors": 4},
-    {"osm_id": 102, "name": "Zelenogradsk Premium", "lat": 54.9605, "lon": 20.4832, "floors": 5},
-    {"osm_id": 103, "name": "Baltic Sunset Hostel", "lat": 54.9580, "lon": 20.4750, "floors": 3},
-    {"osm_id": 104, "name": "Curonian Spit Lodge", "lat": 55.0600, "lon": 20.7500, "floors": 2},
-    {"osm_id": 105, "name": "Villa Moden", "lat": 54.7050, "lon": 20.5050, "floors": 3},
-    {"osm_id": 106, "name": "Sea View Apartments", "lat": 54.9620, "lon": 20.4900, "floors": 6},
-    {"osm_id": 107, "name": "Forest Silence Hotel", "lat": 54.9800, "lon": 20.4200, "floors": 2},
-    {"osm_id": 108, "name": "Kaliningrad City Hub", "lat": 54.7120, "lon": 20.5200, "floors": 8},
+    {"osm_type": "way", "osm_id": 162622681, "name": "Crystal House", "lat": 54.71498, "lon": 20.51511, "floors": 9},
+    {"osm_type": "way", "osm_id": 48817194, "name": "Калининград", "lat": 54.71233, "lon": 20.50902, "floors": 8},
+    {"osm_type": "way", "osm_id": 558380773, "name": "Кайзерхоф", "lat": 54.70281, "lon": 20.51590, "floors": 7},
+    {"osm_type": "way", "osm_id": 382545007, "name": "Парадокс", "lat": 54.96003, "lon": 20.48257, "floors": 5},
+    {"osm_type": "way", "osm_id": 116133914, "name": "Royal Lions", "lat": 54.95766, "lon": 20.46341, "floors": 5},
+    {"osm_type": "way", "osm_id": 115643344, "name": "Королева Луиза", "lat": 54.96123, "lon": 20.48860, "floors": 4},
+    {"osm_type": "way", "osm_id": 115708035, "name": "Sambia", "lat": 54.96419, "lon": 20.48398, "floors": 4},
+    {"osm_type": "way", "osm_id": 162948437, "name": "Замок «Нессельбек»", "lat": 54.79303, "lon": 20.53374, "floors": 2},
 ]
 
 # Соответствие классов дорог из выгрузки Geofabrik тегам OSM highway.
@@ -150,6 +163,257 @@ def prepare_buildings(folder: str) -> gpd.GeoDataFrame:
     gdf = gdf[["osm_id", "levels", "height", "fclass", "geometry"]]
     gdf["geometry"] = gdf.geometry.simplify(0.00002)
     return gdf.set_crs("EPSG:4326", allow_override=True)
+
+
+def download_pbf() -> str | None:
+    """Скачивает OSM PBF области. None, если источника или сети нет."""
+    if os.path.exists(PBF_PATH) and os.path.getsize(PBF_PATH) > 1024 * 1024:
+        _log("PBF уже скачан, использую его.")
+        return PBF_PATH
+
+    os.makedirs(WORK_DIR, exist_ok=True)
+    _log("Скачиваю OSM PBF Калининградской области (~40 МБ)...")
+    try:
+        with _client() as client, client.stream("GET", GEOFABRIK_PBF_URL) as resp:
+            resp.raise_for_status()
+            with open(PBF_PATH, "wb") as fh:
+                for chunk in resp.iter_bytes(chunk_size=1 << 20):
+                    fh.write(chunk)
+    except Exception as exc:  # noqa: BLE001 - источник внешний
+        # Недокачанный файл нельзя оставлять: следующий запуск принял бы его
+        # за готовый кэш и упал бы на разборе.
+        if os.path.exists(PBF_PATH):
+            os.remove(PBF_PATH)
+        _log(f"PBF не скачан: {exc}")
+        return None
+
+    _log(f"Скачано: {os.path.getsize(PBF_PATH) / 1024 / 1024:.1f} МБ")
+    return PBF_PATH
+
+
+def _tag_number(value) -> float | None:
+    """«12», «12.5», «12,5», «12 m» -> число. None, если тег не разобрать."""
+    if value is None:
+        return None
+    text = str(value).replace(",", ".").strip()
+    match = re.search(r"\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        return float(match.group())
+    except ValueError:
+        return None
+
+
+def _floors_from_tags(tags: dict) -> int | None:
+    """Этажность из тегов OSM: building:levels, иначе height / 3 м."""
+    levels = _tag_number(tags.get("building:levels") or tags.get("levels"))
+    if levels:
+        return max(1, int(round(levels)))
+    height = _tag_number(tags.get("height") or tags.get("building:height"))
+    if height:
+        return max(1, int(round(height / 3.0)))
+    return None
+
+
+def _hotel_address(tags: dict) -> str | None:
+    street = tags.get("addr:street")
+    number = tags.get("addr:housenumber")
+    if street and number:
+        return f"{street}, {number}"
+    return street or None
+
+
+def hotel_floors_from_pbf(pbf_path: str) -> dict[str, dict] | None:
+    """Этажность и адреса самих отелей из PBF по их osm_id.
+
+    Читаются только теги — кэш координат не нужен, поэтому проход дешёвый.
+    None означает, что PBF недоступен: тогда остаётся снимок из HOTELS,
+    и источник этой этажности честно помечается как snapshot.
+    """
+    try:
+        import osmium
+    except Exception as exc:  # noqa: BLE001 - зависимость может отсутствовать
+        _log(f"pyosmium недоступен ({exc}) — этажность отелей останется из снимка")
+        return None
+
+    wanted = {(h["osm_type"], h["osm_id"]) for h in HOTELS}
+    found: dict[str, dict] = {}
+
+    class _HotelTags(osmium.SimpleHandler):
+        def _add(self, kind: str, obj) -> None:
+            if (kind, obj.id) not in wanted:
+                return
+            tags = dict(obj.tags)
+            found[f"{kind}/{obj.id}"] = {
+                "floors": _floors_from_tags(tags),
+                "name": tags.get("name") or tags.get("name:ru") or tags.get("name:en"),
+                "address": _hotel_address(tags),
+                # В слой оставляем только то, что нужно сиду: адрес и этажность.
+                "tags": {
+                    key: value
+                    for key, value in tags.items()
+                    if key.startswith("addr:") or key == "building:levels"
+                },
+            }
+
+        def node(self, obj) -> None:
+            self._add("node", obj)
+
+        def way(self, obj) -> None:
+            self._add("way", obj)
+
+        def relation(self, obj) -> None:
+            self._add("relation", obj)
+
+    try:
+        _HotelTags().apply_file(pbf_path)
+    except Exception as exc:  # noqa: BLE001 - повреждённый PBF
+        _log(f"PBF: этажность отелей не прочитана ({exc})")
+        return None
+
+    with_levels = sum(1 for info in found.values() if info["floors"])
+    _log(f"PBF hotels: найдено {len(found)} из {len(HOTELS)}, с этажностью {with_levels}")
+    return found
+
+
+def _building_row(osm_id: int, tags, geometry, area) -> dict | None:
+    """Строка слоя зданий: высота из тегов OSM, None — если вне области."""
+    if geometry is None or geometry.is_empty or not geometry.intersects(area):
+        return None
+    return {
+        "osm_id": osm_id,
+        "levels": _tag_number(tags.get("building:levels") or tags.get("levels")),
+        "height": _tag_number(tags.get("height") or tags.get("building:height")),
+        "fclass": tags.get("building"),
+        "geometry": geometry,
+    }
+
+
+def prepare_buildings_from_pbf(pbf_path: str) -> gpd.GeoDataFrame | None:
+    """Здания вокруг отелей с реальными высотами из тегов OSM.
+
+    PBF — единственный источник ``building:levels`` и ``height``: shapefile
+    того же экстракта этих тегов не содержит, и инструмент заката сравнивал
+    этаж с константой 9 м. Если разбор невозможен (нет pyosmium, битый
+    файл), возвращается None — вызывающий код честно откатывается на
+    shapefile, а не выдумывает высоты.
+    """
+    try:
+        import osmium
+    except Exception as exc:  # noqa: BLE001 - зависимость может отсутствовать
+        _log(f"pyosmium недоступен ({exc}) — высоты зданий останутся неизвестными")
+        return None
+
+    radius_deg = OSM_RADIUS_M / 111_000
+    area = unary_union([Point(h["lon"], h["lat"]).buffer(radius_deg) for h in HOTELS])
+    minx, miny, maxx, maxy = area.bounds
+
+    rows: list[dict] = []
+
+    try:
+        # Кэш координат наполняется только из прочитанных узлов, поэтому
+        # маска обязана включать NODE: с одной маской WAY pyosmium падает
+        # с «Nodes not read from file». Узлы отбрасываем в цикле — фильтр
+        # на уровне ридера отбросил бы их вместе с кэшем координат.
+        processor = osmium.FileProcessor(
+            pbf_path, osmium.osm.NODE | osmium.osm.WAY
+        ).with_locations()
+        for way in processor:
+            if not isinstance(way, osmium.osm.Way):
+                continue
+            tags = way.tags
+            if tags.get("building") in (None, "no"):
+                continue
+            try:
+                coords = [(node.location.lon, node.location.lat) for node in way.nodes]
+            except Exception:  # noqa: BLE001 - узел вне экстракта
+                continue
+            # Здание — замкнутое кольцо; незамкнутые building=construction
+            # пропускаем, а не додумываем контур.
+            if len(coords) < 4 or coords[0] != coords[-1]:
+                continue
+            # Дешёвая отсечка по bbox до построения геометрии.
+            if not (minx <= coords[0][0] <= maxx and miny <= coords[0][1] <= maxy):
+                continue
+
+            geometry = Polygon(coords)
+            if not geometry.is_valid:
+                geometry = geometry.buffer(0)
+            row = _building_row(way.id, tags, geometry, area)
+            if row is not None:
+                rows.append(row)
+    except Exception as exc:  # noqa: BLE001 - повреждённый PBF
+        _log(f"PBF не разобран: {exc}")
+        return None
+
+    if not rows:
+        _log("PBF: зданий вокруг отелей не найдено")
+        return None
+
+    # Отношения (multipolygon) собираются отдельным проходом: у домов
+    # с внутренним двором и у крупных корпусов контур задан несколькими way,
+    # и без склейки луч заката видел бы на их месте пустоту.
+    way_rows = len(rows)
+    rows.extend(_pbf_building_relations(osmium, pbf_path, area))
+
+    gdf = gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
+    gdf["geometry"] = gdf.geometry.simplify(0.00002)
+    gdf = gdf[["osm_id", "levels", "height", "fclass", "geometry"]]
+    known = int((gdf["levels"].notna() | gdf["height"].notna()).sum())
+    _log(
+        f"PBF buildings: {len(gdf)} объектов ({way_rows} way, "
+        f"{len(gdf) - way_rows} отношения), высота известна у {known} "
+        f"({known / len(gdf) * 100:.0f}%), из них levels {int(gdf['levels'].notna().sum())}, "
+        f"height {int(gdf['height'].notna().sum())}"
+    )
+    return gdf
+
+
+def _wkb_factory():
+    """Фабрика WKB: в pyosmium 3.x лежит в osmium.wkb, в 4.x — в osmium.geom."""
+    try:
+        from osmium.wkb import WKBFactory
+    except ImportError:
+        from osmium.geom import WKBFactory
+    return WKBFactory()
+
+
+def _pbf_building_relations(osmium, pbf_path: str, area) -> list[dict]:
+    """Здания, контур которых задан отношением OSM (multipolygon).
+
+    pyosmium читает файл дважды, чтобы склеить внешние и внутренние кольца —
+    это дороже обычного прохода, зато крупные здания не выпадают из слоя.
+    Области, собранные из замкнутых way, пропускаются: они уже разобраны
+    первым проходом, иначе каждое здание посчиталось бы дважды.
+    """
+    rows: list[dict] = []
+
+    class _RelationAreas(osmium.SimpleHandler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.factory = _wkb_factory()
+
+        def area(self, obj) -> None:
+            if obj.from_way():
+                return
+            tags = obj.tags
+            if tags.get("building") in (None, "no"):
+                return
+            try:
+                geometry = shapely_wkb.loads(self.factory.create_multipolygon(obj))
+            except Exception:  # noqa: BLE001 - отношение с неполными членами
+                return
+            row = _building_row(obj.orig_id(), tags, geometry, area)
+            if row is not None:
+                rows.append(row)
+
+    try:
+        _RelationAreas().apply_file(pbf_path, locations=True)
+    except Exception as exc:  # noqa: BLE001 - повреждённый PBF
+        _log(f"PBF: отношения не разобраны ({exc})")
+
+    return rows
 
 
 def prepare_noise(folder: str) -> gpd.GeoDataFrame:
@@ -315,14 +579,51 @@ def _download_skadi(tile: str) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # 4. Сохранение
 # ---------------------------------------------------------------------------
-def save_outputs(buildings, noise, coast) -> None:
-    hotels_gdf = gpd.GeoDataFrame(
-        [{"osm_id": h["osm_id"], "name": h["name"], "floors": h["floors"],
-          "geometry": Point(h["lon"], h["lat"])} for h in HOTELS],
-        crs="EPSG:4326",
-    )
+def write_hotels(hotel_info: dict[str, dict] | None = None, buildings=None) -> None:
+    """hotels.geojson: этажность и адрес из PBF, точка — из контура здания.
+
+    Точку берём как representative_point контура: координата из списка
+    привязана к углу way, а инструменты (луч заката, путь до моря) считают
+    от точки внутри здания.
+    """
+    hotel_info = hotel_info or {}
+    centroids: dict = {}
+    if buildings is not None and not buildings.empty and "osm_id" in buildings.columns:
+        wanted_ids = [hotel["osm_id"] for hotel in HOTELS]
+        picked = buildings[buildings["osm_id"].isin(wanted_ids)]
+        centroids = {
+            int(row.osm_id): row.geometry.representative_point()
+            for _, row in picked.iterrows()
+        }
+
+    rows = []
+    for hotel in HOTELS:
+        info = hotel_info.get(f"{hotel['osm_type']}/{hotel['osm_id']}") or {}
+        floors = info.get("floors")
+        rows.append(
+            {
+                "osm_id": hotel["osm_id"],
+                "osm_type": hotel["osm_type"],
+                "name": info.get("name") or hotel["name"],
+                "address": info.get("address"),
+                "floors": floors or hotel["floors"],
+                # osm_pbf — этажность прочитана из тегов OSM в этом прогоне;
+                # snapshot — PBF недоступен, оставлено значение из списка.
+                "floors_source": "osm_pbf" if floors else "snapshot",
+                "tags": info.get("tags") or {},
+                "geometry": centroids.get(hotel["osm_id"])
+                or Point(hotel["lon"], hotel["lat"]),
+            }
+        )
+
+    hotels_gdf = gpd.GeoDataFrame(rows, crs="EPSG:4326")
     hotels_gdf.to_file(os.path.join(DATA_DIR, "hotels.geojson"), driver="GeoJSON")
-    _log(f"hotels.geojson: {len(hotels_gdf)} записей")
+    from_pbf = sum(1 for row in rows if row["floors_source"] == "osm_pbf")
+    _log(f"hotels.geojson: {len(hotels_gdf)} записей, этажность из PBF у {from_pbf}")
+
+
+def save_outputs(buildings, noise, coast, hotel_info: dict[str, dict] | None = None) -> None:
+    write_hotels(hotel_info, buildings)
 
     for name, gdf, driver in (
         ("buildings.gpkg", buildings, "GPKG"),
@@ -342,15 +643,54 @@ def describe(gdf: gpd.GeoDataFrame, column: str, label: str) -> None:
     _log(f"{label}: {len(gdf)} объектов, по классам: {counts}")
 
 
+def build_buildings(folder: str | None, pbf_path: str | None = None) -> gpd.GeoDataFrame:
+    """Здания вокруг отелей: сначала PBF (с высотами), затем shapefile.
+
+    Порядок именно такой: shapefile — резерв, потому что он теряет этажность,
+    а без неё луч заката не может отличить пятиэтажку от сарая.
+    """
+    if pbf_path:
+        buildings = prepare_buildings_from_pbf(pbf_path)
+        if buildings is not None:
+            return buildings
+        _log("PBF недоступен — высота зданий останется неизвестной (9 м по умолчанию)")
+
+    if folder is None:
+        return gpd.GeoDataFrame(
+            columns=["osm_id", "levels", "height", "fclass", "geometry"], crs="EPSG:4326"
+        )
+    return prepare_buildings(folder)
+
+
 def main() -> int:
     args = set(sys.argv[1:])
+    # PBF качается один раз: из него же берётся этажность самих отелей.
+    pbf_path = None if "--no-pbf" in args else download_pbf()
+
+    if "--hotels-only" in args:
+        # Только отели: этажность и адреса из PBF, точки — по готовому слою зданий.
+        buildings_file = os.path.join(DATA_DIR, "buildings.gpkg")
+        buildings = gpd.read_file(buildings_file) if os.path.exists(buildings_file) else None
+        write_hotels(hotel_floors_from_pbf(pbf_path) if pbf_path else None, buildings)
+        return 0
+
+    if "--buildings-only" in args:
+        # Пересборка только зданий: не тянет 55 МБ shapefile и тайлы DEM.
+        buildings = build_buildings(None, pbf_path)
+        if buildings.empty:
+            _log("Здания не собраны")
+            return 1
+        buildings.to_file(os.path.join(DATA_DIR, "buildings.gpkg"), driver="GPKG")
+        size = os.path.getsize(os.path.join(DATA_DIR, "buildings.gpkg")) / 1024 / 1024
+        _log(f"buildings.gpkg: {len(buildings)} записей, {size:.1f} МБ")
+        return 0
 
     if "--dem-only" not in args:
         _log("Сбор OSM-слоёв: Geofabrik")
         archive = download_extract()
         folder = extract_layers(archive)
 
-        buildings = prepare_buildings(folder)
+        buildings = build_buildings(folder, pbf_path)
         noise = prepare_noise(folder)
         coast = prepare_coast(folder)
 
@@ -360,7 +700,12 @@ def main() -> int:
         describe(noise, "railway", "железная дорога")
         describe(coast, "kind", "побережье/вода")
 
-        save_outputs(buildings, noise, coast)
+        save_outputs(
+            buildings,
+            noise,
+            coast,
+            hotel_floors_from_pbf(pbf_path) if pbf_path else None,
+        )
         shutil.rmtree(WORK_DIR, ignore_errors=True)
 
     if "--osm-only" not in args:

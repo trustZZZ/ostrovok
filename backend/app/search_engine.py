@@ -21,7 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.feature_registry import FeatureSpec, load_registry, select_features
+from app.feature_registry import (
+    FeatureSpec,
+    load_registry,
+    resolve_rows,
+    select_features,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +39,11 @@ KEYWORD_INTENT: dict[str, tuple[tuple[str, ...], Any]] = {
     "walk_to_sea": (("мор", "пляж", "побереж", "beach"), 15),
     "climate_summer": (("тепл", "жарк", "купат", "солнечн"), 22),
     "pet_friendly": (("питом", "собак", "кош", "пёс", "pet"), True),
+    # Номерные характеристики: из открытых данных не выводятся, но гость
+    # просит именно их — поэтому они участвуют в разборе пожелания.
+    "room_west_windows": (("номер с видом", "западн"), True),
+    "room_silence": (("тихий номер", "шумоизоляц", "не слыш"), True),
+    "room_balcony": (("балкон", "террас"), True),
 }
 
 
@@ -60,7 +70,8 @@ async def _llm_intent(query: str) -> dict[str, Any] | None:
     system = (
         "Ты извлекаешь пожелания гостя об отеле. Отвечай ТОЛЬКО JSON без пояснений.\n"
         "Если пожелание не упомянуто — поставь null. Для числа верни порог, "
-        "который имеет смысл для гостя.\n"
+        "который имеет смысл для гостя: не 0 и не заведомо крайние значения "
+        "(например, «тихо» — это шум около 30, а не 0).\n"
         f"Доступные характеристики:\n{described}\n\n"
         f"Формат ответа: {{{schema}}}"
     )
@@ -80,19 +91,29 @@ async def _llm_intent(query: str) -> dict[str, Any] | None:
     return {key: value for key, value in data.items() if key in allowed}
 
 
+def _clamp_intent(intent: dict[str, Any]) -> dict[str, Any]:
+    """Приводит числовые пороги к границам, описанным в реестре."""
+    registry = load_registry()
+    result: dict[str, Any] = {}
+    for key, value in intent.items():
+        spec = registry.get(key)
+        result[key] = spec.search.clamp(value) if spec else value
+    return result
+
+
 async def parse_intent(query: str) -> tuple[dict[str, Any], str]:
     """Возвращает (ограничения, источник разбора: "llm" | "keywords")."""
     heuristic = _keyword_intent(query)
     if not settings.llm_enabled:
-        return heuristic, "keywords"
+        return _clamp_intent(heuristic), "keywords"
 
     llm_intent = await _llm_intent(query)
     if llm_intent is None:
-        return heuristic, "keywords"
+        return _clamp_intent(heuristic), "keywords"
 
     merged = dict(heuristic)
     merged.update({key: value for key, value in llm_intent.items() if value is not None})
-    return merged, "llm"
+    return _clamp_intent(merged), "llm"
 
 
 def _describe(spec: FeatureSpec, row: Any) -> str:
@@ -114,11 +135,27 @@ def _describe(spec: FeatureSpec, row: Any) -> str:
         return f"в июле в среднем +{value.get('mean_july_max_c')} °C"
     if "allowed" in value:
         return "гостей с питомцем принимают" if value["allowed"] else "с питомцем не принимают"
+    # Булевы характеристики (в том числе номерные) описываются по value_field
+    # из реестра — новая фича заработает без правки этого файла.
+    flag = spec.extract(value)
+    if isinstance(flag, bool):
+        return f"{spec.title}: {'да' if flag else 'нет'}"
     return f"{spec.title}: {json.dumps(value, ensure_ascii=False)}"
 
 
 def _confidence_note(row: Any) -> str:
     return f"{row.source}, уверенность {row.confidence:.0%}"
+
+
+def _empty_explanation(has_features: bool) -> str:
+    """Пустая выдача объясняется по-разному — иначе сообщение врёт.
+
+    «Характеристики не собраны» при нераспознанном пожелании отправляло бы
+    пользователя запускать сбор заново, хотя данные уже есть.
+    """
+    if has_features:
+        return "пожелание не распознано — уточните, что важно"
+    return "характеристики ещё не собраны: запустите сбор для отеля"
 
 
 async def search_hotels(db: AsyncSession, query: str, limit: int = 10) -> dict[str, Any]:
@@ -135,12 +172,23 @@ async def search_hotels(db: AsyncSession, query: str, limit: int = 10) -> dict[s
 
     matches: list[dict[str, Any]] = []
     for hotel in hotels:
-        # Лучшее значение характеристики: максимальная уверенность среди источников.
-        best: dict[str, Any] = {}
+        # Выбор значения среди источников — по правилам реестра, а не по
+        # «кто последний записал»: для измеримых характеристик доверяем
+        # геоданным, для субъективных (номера, питомцы) — ответу отельера.
+        grouped: dict[str, list[Any]] = {}
         for row in hotel.features:
-            current = best.get(row.feature_key)
-            if current is None or (row.confidence or 0) > (current.confidence or 0):
-                best[row.feature_key] = row
+            grouped.setdefault(row.feature_key, []).append(row)
+
+        best: dict[str, Any] = {}
+        for key, rows in grouped.items():
+            spec = registry.get(key)
+            chosen = (
+                resolve_rows(rows, spec)
+                if spec
+                else max(rows, key=lambda item: item.confidence or 0)
+            )
+            if chosen is not None:
+                best[key] = chosen
 
         matched: list[str] = []
         missed: list[str] = []
@@ -157,12 +205,17 @@ async def search_hotels(db: AsyncSession, query: str, limit: int = 10) -> dict[s
                 notes.append(f"нет данных: {spec.title}")
                 continue
             actual = spec.extract(row.value)
+            described = f"{_describe(spec, row)} ({_confidence_note(row)})"
+            if row.disputed:
+                # Противоречие источников не скрываем: гость должен видеть,
+                # что данные расходятся, а не получить уверенный ответ.
+                described += ", источники расходятся"
             if spec.search.matches(wanted, actual):
                 matched.append(key)
-                notes.append(f"{_describe(spec, row)} ({_confidence_note(row)})")
+                notes.append(described)
             else:
                 missed.append(key)
-                notes.append(f"{_describe(spec, row)} — не то, что просили")
+                notes.append(f"{described} — не то, что просили")
 
         considered = len(matched) + len(missed) + len(unknown)
         score = len(matched) / considered if considered else 0.0
@@ -182,11 +235,16 @@ async def search_hotels(db: AsyncSession, query: str, limit: int = 10) -> dict[s
                     "value": row.value,
                     "source": row.source,
                     "confidence": row.confidence,
+                    "disputed": bool(row.disputed),
                     "raw_evidence": row.raw_evidence,
                 }
                 for row in hotel.features
             ],
-            "explanation": "; ".join(notes) if notes else "характеристики ещё не собраны",
+            "explanation": (
+                "; ".join(notes)
+                if notes
+                else _empty_explanation(bool(hotel.features))
+            ),
             "score": round(score, 3),
             "_matched": len(matched),
             "_missed": len(missed),
@@ -204,6 +262,11 @@ async def search_hotels(db: AsyncSession, query: str, limit: int = 10) -> dict[s
         f"Пожелания распознаны ({intent_source}): {intent or 'ничего не найдено'}",
         f"Проверено отелей: {len(hotels)}",
     ]
+    if not intent:
+        agent_log.append(
+            "Пожелание не распознано: перечислите, что важно — "
+            "закат, тишина, море, балкон, питомец"
+        )
     if hotels and not any(hotel.features for hotel in hotels):
         agent_log.append(
             "У отелей ещё нет характеристик: запустите POST /api/hotels/{id}/enrich"

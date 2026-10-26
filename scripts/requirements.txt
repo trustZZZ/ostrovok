@@ -2,3 +2,4 @@ geopandas>=0.14.0
 requests>=2.31.0
 elevation>=1.1.0  # Для скачивания SRTM DEM
 shapely>=2.0.0
+osmium>=3.6  # Разбор OSM PBF: реальные высоты зданий (building:levels, height)
