@@ -1,0 +1,15 @@
+{
+"type": "FeatureCollection",
+"name": "hotels",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "osm_id": 101, "name": "Отель Кёнигсберг", "floors": 4 }, "geometry": { "type": "Point", "coordinates": [ 20.5101, 54.7104 ] } },
+{ "type": "Feature", "properties": { "osm_id": 102, "name": "Zelenogradsk Premium", "floors": 5 }, "geometry": { "type": "Point", "coordinates": [ 20.4832, 54.9605 ] } },
+{ "type": "Feature", "properties": { "osm_id": 103, "name": "Baltic Sunset Hostel", "floors": 3 }, "geometry": { "type": "Point", "coordinates": [ 20.475, 54.958 ] } },
+{ "type": "Feature", "properties": { "osm_id": 104, "name": "Curonian Spit Lodge", "floors": 2 }, "geometry": { "type": "Point", "coordinates": [ 20.75, 55.06 ] } },
+{ "type": "Feature", "properties": { "osm_id": 105, "name": "Villa Moden", "floors": 3 }, "geometry": { "type": "Point", "coordinates": [ 20.505, 54.705 ] } },
+{ "type": "Feature", "properties": { "osm_id": 106, "name": "Sea View Apartments", "floors": 6 }, "geometry": { "type": "Point", "coordinates": [ 20.49, 54.962 ] } },
+{ "type": "Feature", "properties": { "osm_id": 107, "name": "Forest Silence Hotel", "floors": 2 }, "geometry": { "type": "Point", "coordinates": [ 20.42, 54.98 ] } },
+{ "type": "Feature", "properties": { "osm_id": 108, "name": "Kaliningrad City Hub", "floors": 8 }, "geometry": { "type": "Point", "coordinates": [ 20.52, 54.712 ] } }
+]
+}

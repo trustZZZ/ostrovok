@@ -1,0 +1,25 @@
+# Контекст сборки frontend — корень репозитория. Backend собирается из ./backend.
+.git
+.gitignore
+
+# JS
+node_modules
+dist
+.vite
+*.tsbuildinfo
+npm-debug.log*
+
+# Python
+__pycache__
+*.py[cod]
+.venv
+venv
+.pytest_cache
+*.egg-info
+
+# Данные и артефакты: монтируются в контейнеры, в образ не нужны
+data
+.tools
+backend
+scripts
+*.log

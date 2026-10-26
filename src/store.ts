@@ -1,5 +1,8 @@
 import { create } from 'zustand';
-import { hotels, routes, type Hotel, type Route, type HotelierQuestion } from './data/mockHotels';
+import { hotels, routes, type Hotel, type Route } from './data/mockHotels';
+import { isApiAvailable, listHotels, searchHotels } from './api/client';
+
+type DataSource = 'unknown' | 'api' | 'demo';
 
 interface AppState {
   hotels: Hotel[];
@@ -8,14 +11,58 @@ interface AppState {
   searchQuery: string;
   searchResults: Hotel[];
   agentLog: string[];
-  
+  /** Откуда пришли данные: из API или из демо-набора. */
+  dataSource: DataSource;
+  /** Распознанные из запроса ограничения (для подсказки в UI). */
+  searchIntent: Record<string, any> | null;
+  isSearching: boolean;
+
   // Actions
   toggleCompare: (hotelId: number) => void;
   setSearchQuery: (query: string) => void;
-  performSearch: (query: string) => void;
+  performSearch: (query: string) => Promise<void>;
+  loadHotels: () => Promise<void>;
   answerQuestion: (hotelId: number, questionId: number, answer: string) => void;
   addAgentLog: (msg: string) => void;
   clearAgentLog: () => void;
+}
+
+/**
+ * Локальный скоринг по демо-набору.
+ * Используется только когда бэкенд недоступен: интерфейс остаётся
+ * работоспособным, но результат помечается как демонстрационный.
+ */
+function scoreDemoHotels(query: string): Hotel[] {
+  const q = query.toLowerCase();
+
+  const scored = hotels.map(hotel => {
+    let score = 0;
+
+    for (const feature of hotel.features) {
+      const text = `${feature.label} ${feature.value} ${feature.detail}`.toLowerCase();
+
+      if (q.includes('закат') && feature.key === 'sunset_view' && feature.value.includes('Виден')) score += 30;
+      if (q.includes('тих') && feature.key === 'noise_score' && parseInt(feature.value) < 30) score += 25;
+      if ((q.includes('море') || q.includes('пляж')) && feature.key === 'walk_to_sea' && parseInt(feature.value) <= 5) score += 25;
+      if (q.includes('истор') && feature.key === 'wikidata_history' && feature.value.includes('Да')) score += 20;
+      if ((q.includes('семь') || q.includes('дет')) && feature.key === 'family' && feature.value.includes('Да')) score += 20;
+      if ((q.includes('питом') || q.includes('кот') || q.includes('собак')) && feature.key === 'family' && feature.value.toLowerCase().includes('pet')) score += 25;
+      if ((q.includes('парков') || q.includes('машин')) && feature.key === 'car_access') score += 15;
+      if (q.includes('воздух') && feature.key === 'air_quality') score += 15;
+      if (text.includes(q) && q.length > 2) score += 5;
+    }
+
+    if (hotel.name.toLowerCase().includes(q) || hotel.address.toLowerCase().includes(q)) score += 10;
+
+    return { hotel, score };
+  });
+
+  const results = scored
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map(item => item.hotel);
+
+  return results.length > 0 ? results : hotels;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -25,6 +72,9 @@ export const useStore = create<AppState>((set, get) => ({
   searchQuery: '',
   searchResults: [],
   agentLog: [],
+  dataSource: 'unknown',
+  searchIntent: null,
+  isSearching: false,
 
   toggleCompare: (hotelId: number) => {
     const current = get().selectedHotelIds;
@@ -37,44 +87,48 @@ export const useStore = create<AppState>((set, get) => ({
 
   setSearchQuery: (query: string) => set({ searchQuery: query }),
 
-  performSearch: (query: string) => {
-    set({ searchQuery: query });
-    const q = query.toLowerCase();
-    
-    // Simple NLP-like search based on feature keywords
-    const scored = hotels.map(hotel => {
-      let score = 0;
-      const features = hotel.features;
-      
-      // Check each feature
-      for (const f of features) {
-        const text = `${f.label} ${f.value} ${f.detail}`.toLowerCase();
-        
-        if (q.includes('закат') && f.key === 'sunset_view' && f.value.includes('Виден')) score += 30;
-        if (q.includes('тих') && f.key === 'noise_score' && parseInt(f.value) < 30) score += 25;
-        if ((q.includes('море') || q.includes('пляж')) && f.key === 'walk_to_sea' && parseInt(f.value) <= 5) score += 25;
-        if (q.includes('истор') && f.key === 'wikidata_history' && f.value.includes('Да')) score += 20;
-        if ((q.includes('семь') || q.includes('дет')) && f.key === 'family' && f.value.includes('Да')) score += 20;
-        if ((q.includes('питом') || q.includes('кот') || q.includes('собак')) && f.key === 'family' && f.value.toLowerCase().includes('pet')) score += 25;
-        if ((q.includes('парков') || q.includes('машин')) && f.key === 'car_access') score += 15;
-        if ((q.includes('ноч') || q.includes('бар') || q.includes('ресторан')) && f.key === 'night_amenities') score += 15;
-        if ((q.includes('воздух') || q.includes('эколог')) && f.key === 'air_quality') score += 15;
-        if ((q.includes('спа') || q.includes('релакс')) && f.key === 'night_amenities') score += 10;
-      }
-      
-      // Name/address matching
-      if (hotel.name.toLowerCase().includes(q) || hotel.address.toLowerCase().includes(q)) score += 10;
-      
-      return { hotel, score };
+  /**
+   * Подтягивает отели с собранными характеристиками из БД.
+   * Если API недоступен — остаётся демо-набор.
+   */
+  loadHotels: async () => {
+    const online = await isApiAvailable();
+    if (!online) {
+      set({ dataSource: 'demo' });
+      return;
+    }
+
+    const loaded = await listHotels(hotels);
+    set({
+      hotels: loaded.length > 0 ? loaded : hotels,
+      dataSource: loaded.length > 0 ? 'api' : 'demo',
     });
-    
-    const results = scored
-      .filter(s => s.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .map(s => s.hotel);
-    
-    // If no results, show all hotels
-    set({ searchResults: results.length > 0 ? results : hotels });
+  },
+
+  performSearch: async (query: string) => {
+    set({ searchQuery: query, isSearching: true });
+
+    const response = await searchHotels(query, hotels);
+
+    if (!response.offline && response.hotels.length > 0) {
+      set({
+        searchResults: response.hotels,
+        agentLog: response.agent_log,
+        searchIntent: response.intent ?? null,
+        dataSource: 'api',
+        isSearching: false,
+      });
+      return;
+    }
+
+    // Бэкенд недоступен — показываем демонстрационный результат.
+    set({
+      searchResults: scoreDemoHotels(query),
+      agentLog: ['Бэкенд недоступен: показан демонстрационный набор'],
+      searchIntent: null,
+      dataSource: 'demo',
+      isSearching: false,
+    });
   },
 
   answerQuestion: (hotelId: number, questionId: number, answer: string) => {

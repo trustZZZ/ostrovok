@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "seed": "python scripts/fetch_data.py"
+    "seed": "docker compose --profile tools run --rm --build seed"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",

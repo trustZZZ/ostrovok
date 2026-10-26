@@ -7,7 +7,7 @@ def get_llm():
     """Инициализирует DeepSeek через OpenAI-совместимый клиент."""
     return ChatOpenAI(
         model=settings.LLM_MODEL,
-        openai_api_key=settings.LLM_API_KEY or settings.OPENAI_API_KEY or "dummy-key",
+        openai_api_key=settings.llm_api_key or "dummy-key",
         openai_api_base=settings.LLM_BASE_URL,
         temperature=0.1, # Низкая температура для стабильного JSON и логики
         model_kwargs={"response_format": {"type": "json_object"}}  # Форсируем JSON
@@ -15,7 +15,7 @@ def get_llm():
 
 async def generate_questions(conflicts: list[dict], features: dict) -> list[dict]:
     """Генерирует вопросы для отельера на основе найденных конфликтов."""
-    if settings.USE_MOCK_LLM or not settings.LLM_API_KEY:
+    if not settings.llm_enabled:
         return [{
             "id": "q_mock_1",
             "feature_key": "noise_level_verified",
@@ -40,7 +40,7 @@ async def generate_questions(conflicts: list[dict], features: dict) -> list[dict
 
 async def parse_answer_with_llm(question: str, raw_answer: str, feature_key: str) -> dict:
     """Парсит свободный текст ответа отельера в структурированное значение."""
-    if settings.USE_MOCK_LLM or not settings.LLM_API_KEY:
+    if not settings.llm_enabled:
         return {"value": True if "да" in raw_answer.lower() else raw_answer, "confidence": 0.95}
 
     llm = get_llm()

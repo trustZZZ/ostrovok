@@ -41,12 +41,17 @@ dist/
 build/
 
 # ================= Данные =================
-# Папка data/ заполняется скриптами (scripts/fetch_data.py) и содержит
-# большие геофайлы (dem.tif, buildings.gpkg) и кэши — не для git.
-# Файл seed.sql исключение: он монтируется в контейнер PostgreSQL.
-# Стало (seed.sql останется в git):
-/data/*
-!/data/seed.sql
+# Демо-данные (hotels.geojson, buildings.gpkg, noise_sources.geojson,
+# beaches.geojson, dem.tif, seed.sql) лежат в репозитории — этого требует
+# условие трека: проект должен запускаться без многочасовой загрузки данных.
+# Игнорируем только временные файлы загрузчика scripts/fetch_data.py.
+/data/dem_temp.zip
+/data/*.tmp
+/data/*.part
+
+# Генерируемые кэши загрузчика — в рантайме не читаются
+/data/features_cache.json
+/data/wikidata_cache.json
 
 
 # ================= Артефакты и резервные копии =================

@@ -34,6 +34,10 @@ export interface Hotel {
   features: HotelFeature[];
   questions: HotelierQuestion[];
   sunset_ray?: { azimuth: number; length_km: number };
+  /** Пояснение подбора из API (собирается из evidence собранных характеристик). */
+  explanation?: string;
+  /** Оценка соответствия запросу, 0..1. */
+  score?: number;
 }
 
 export interface Route {

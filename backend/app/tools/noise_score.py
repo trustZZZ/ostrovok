@@ -38,42 +38,64 @@ def compute_noise_score(
     """
     total = 0.0
     breakdown = {}
-    
+
     for (tag_k, tag_v), (weight, radius_m) in WEIGHTS.items():
         layer = osm_layers.get(tag_k)
         if layer is None:
             continue
-        
-        # Фильтруем по значению тега
-        if tag_v and tag_k in layer.columns:
-            subset = layer[layer[tag_k] == tag_v]
-        else:
-            subset = layer
-        
-        # Радиус в градусах (грубо: 1° ≈ 111 км)
-        radius_deg = radius_m / 111_000
-        nearby = subset[subset.geometry.within(hotel_geom.buffer(radius_deg))]
-        
-        contribution = weight * len(nearby)
+
+        subset = layer[layer[tag_k] == tag_v] if tag_v and tag_k in layer.columns else layer
+        if subset.empty:
+            continue
+
+        # Радиус в градусах (грубо: 1° ≈ 111 км). Берём пересечение, а не
+        # вхождение целиком: дорога, проходящая рядом, тоже создаёт шум.
+        radius_deg = radius_m / 111_000.0
+        nearby = subset[subset.geometry.intersects(hotel_geom.buffer(radius_deg))]
+        if nearby.empty:
+            continue
+
+        # Затухание по расстоянию: объект у самого отеля весит больше.
+        contribution = 0.0
+        for geometry in nearby.geometry:
+            distance_m = geometry.distance(hotel_geom) * 111_000.0
+            ratio = min(1.0, distance_m / radius_m)
+            contribution += weight * (1.0 - ratio)
+
         total += contribution
         breakdown[f"{tag_k}={tag_v}"] = {
-            "count": len(nearby),
+            "count": int(len(nearby)),
             "weight": weight,
+            "radius_m": radius_m,
             "contribution": round(contribution, 1),
         }
-    
+
     score = min(100.0, total)
-    
-    # Confidence: выше, если учтено больше типов источников
-    confidence = 0.9 if len(breakdown) >= 3 else (0.8 if len(breakdown) >= 1 else 0.6)
-    
+
+    if not breakdown:
+        # Слоя нет или рядом ничего не найдено: это отсутствие данных,
+        # а не «идеальная тишина». Ноль без источников не выдаём за факт.
+        return {
+            "score": None,
+            "level": "нет данных",
+            "breakdown": {},
+            "confidence": 0.0,
+            "source": "OSM",
+            "evidence": {"reason": "нет слоёв шума или объектов рядом"},
+        }
+
+    level = "Тихо" if score < 25 else ("Умеренно" if score < 55 else "Шумно")
+    confidence = 0.85 if len(breakdown) >= 3 else 0.7
+
     return {
         "score": round(score, 1),
+        "level": level,
         "breakdown": breakdown,
         "confidence": confidence,
         "source": "OSM",
         "evidence": {
             "total_sources": len(breakdown),
             "max_radius_m": max(r for _, r in WEIGHTS.values()),
+            "model": "линейное затухание внутри радиуса",
         },
     }

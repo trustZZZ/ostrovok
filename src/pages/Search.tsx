@@ -7,9 +7,17 @@ import { Search, MapPin, Sparkles, ArrowRight, Star, GitCompare } from 'lucide-r
 import { AgentPipeline } from '../components/AgentPipeline';
 
 export const SearchPage: React.FC = () => {
-  const { hotels, searchResults, performSearch, searchQuery, toggleCompare, selectedHotelIds } = useStore();
+  const {
+    hotels,
+    searchResults,
+    performSearch,
+    searchQuery,
+    toggleCompare,
+    selectedHotelIds,
+    isSearching,
+    dataSource,
+  } = useStore();
   const [inputValue, setInputValue] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
   const [showPipeline, setShowPipeline] = useState(false);
   const [expandedHotel, setExpandedHotel] = useState<number | null>(null);
   const navigate = useNavigate();
@@ -28,14 +36,9 @@ export const SearchPage: React.FC = () => {
     }
   }, [searchParams]);
 
-  const handleSearch = (query: string) => {
-    setIsSearching(true);
+  const handleSearch = async (query: string) => {
     setShowPipeline(true);
-    // Simulate agent processing with pipeline visualization
-    setTimeout(() => {
-      performSearch(query);
-      setIsSearching(false);
-    }, 3800); // Pipeline takes ~3.8s total
+    await performSearch(query);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -131,7 +134,23 @@ export const SearchPage: React.FC = () => {
               <h2 className="text-lg font-bold text-gray-900">
                 {searchQuery ? `Результаты: «${searchQuery}»` : 'Все отели'}
               </h2>
-              <span className="text-sm text-gray-500">{displayedHotels.length} отелей</span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-500">{displayedHotels.length} отелей</span>
+                <span
+                  className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${
+                    dataSource === 'api'
+                      ? 'bg-emerald-50 text-emerald-700'
+                      : 'bg-amber-50 text-amber-700'
+                  }`}
+                  title={
+                    dataSource === 'api'
+                      ? 'Характеристики собраны системой и лежат в БД'
+                      : 'Бэкенд недоступен: показан демонстрационный набор'
+                  }
+                >
+                  {dataSource === 'api' ? 'данные из БД' : 'демо-набор'}
+                </span>
+              </div>
             </div>
 
             {displayedHotels.map(hotel => {
@@ -165,10 +184,12 @@ export const SearchPage: React.FC = () => {
                               {hotel.address}
                             </p>
                           </div>
-                          <div className="text-right">
-                            <div className="font-bold text-ocean-700">{hotel.price_per_night.toLocaleString()} ₽</div>
-                            <div className="text-xs text-gray-500">за ночь</div>
-                          </div>
+                          {hotel.price_per_night > 0 && (
+                            <div className="text-right">
+                              <div className="font-bold text-ocean-700">{hotel.price_per_night.toLocaleString()} ₽</div>
+                              <div className="text-xs text-gray-500">за ночь</div>
+                            </div>
+                          )}
                         </div>
 
                         {/* Key features */}
@@ -232,11 +253,15 @@ export const SearchPage: React.FC = () => {
                               <Sparkles className="w-4 h-4" />
                               Почему подходит:
                             </p>
-                            <ul className="text-sm text-ocean-700 mt-1 space-y-1">
-                              {sunsetFeature?.value.includes('Виден') && <li>✓ Вид на закат над морем</li>}
-                              {noiseFeature && parseInt(noiseFeature.value) < 30 && <li>✓ Тихий район (шум {noiseFeature.value})</li>}
-                              {walkFeature && parseInt(walkFeature.value) <= 5 && <li>✓ {walkFeature.value} до моря пешком</li>}
-                            </ul>
+                            {hotel.explanation ? (
+                              <p className="text-sm text-ocean-700 mt-1">{hotel.explanation}</p>
+                            ) : (
+                              <ul className="text-sm text-ocean-700 mt-1 space-y-1">
+                                {sunsetFeature?.value.includes('Виден') && <li>✓ Вид на закат над морем</li>}
+                                {noiseFeature && parseInt(noiseFeature.value) < 30 && <li>✓ Тихий район (шум {noiseFeature.value})</li>}
+                                {walkFeature && parseInt(walkFeature.value) <= 5 && <li>✓ {walkFeature.value} до моря пешком</li>}
+                              </ul>
+                            )}
                           </div>
                         )}
                         

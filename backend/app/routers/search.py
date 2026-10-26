@@ -1,40 +1,31 @@
-"""
-API роутер поиска отелей по намерению пользователя.
-"""
-from fastapi import APIRouter
+"""API роутер поиска отелей по пожеланиям пользователя."""
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from langchain_core.prompts import ChatPromptTemplate
-import json
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.llm_utils import get_llm
+from app.db import get_db
+from app.search_engine import parse_intent, search_hotels
 
 router = APIRouter()
 
 
 class SearchRequest(BaseModel):
     query: str
+    limit: int = 10
 
 
 @router.post("/search")
-async def search(req: SearchRequest):
-    """Разбирает свободный запрос пользователя в структурированный интент и ищет отели."""
-    llm = get_llm()
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "Ты - поисковый агент отелей. Преобразуй запрос пользователя в JSON с полями: sunset_view (bool), noise_score_lt (int), walk_to_sea_min (int). Если параметр не важен, ставь null."),
-        ("human", "Запрос: {query}")
-    ])
+async def search(req: SearchRequest, db: AsyncSession = Depends(get_db)):
+    """Ищет отели по свободному описанию пожеланий.
 
-    try:
-        response = await llm.ainvoke(prompt.format(query=req.query))
-        clean_json = response.content.replace("```json", "").replace("```", "").strip()
-        intent = json.loads(clean_json)
-    except Exception:
-        intent = {"sunset_view": None, "noise_score_lt": 50, "walk_to_sea_min": 10}  # Fallback
+    Разбор пожелания — LLM (или ключевые слова без ключа), ранжирование —
+    по фактическим характеристикам из БД с указанием источника и уверенности.
+    """
+    return await search_hotels(db, req.query, limit=req.limit)
 
-    # Здесь должен быть реальный запрос к БД с использованием intent
-    # Для демо вернем моковые данные, но с реальным intent
-    return {
-        "hotels": [{"id": 102, "name": "Zelenogradsk Premium", "match_score": 0.95}],
-        "agent_log": [f"🧠 Распознан интент: {intent}", "🔍 Найдено 1 совпадение в БД"],
-        "intent": intent,
-    }
+
+@router.post("/search/intent")
+async def search_intent(req: SearchRequest):
+    """Только разбор пожелания, без поиска: удобно для отладки и UI."""
+    parsed, source = await parse_intent(req.query)
+    return {"intent": parsed, "source": source}

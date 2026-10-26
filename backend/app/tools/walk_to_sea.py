@@ -1,162 +1,199 @@
+"""Пешая доступность моря по реальной дорожной сети OSM.
+
+Сеть дорог и вода берутся из локальных слоёв, собранных скриптом
+``scripts/fetch_data.py``. Внешние API не используются: расчёт
+воспроизводим и не зависит от доступности Overpass.
+
+Маршрут — кратчайший путь по графу дорог, а не расстояние по прямой.
+Если воды в радиусе нет или путь не найден, инструмент обязан сказать
+«данных нет», а не подставить правдоподобное число.
 """
-Пешая доступность пляжа по реальному графу OSM с учётом рельефа.
-Используем osmnx для построения графа, DEM для уклона.
-"""
-import osmnx as ox
+from __future__ import annotations
+
+import logging
+import math
+
 import networkx as nx
-import numpy as np
-import rasterio
-from shapely.geometry import Point
+
+logger = logging.getLogger(__name__)
+
+WALK_SPEED_M_MIN = 80.0
+MAJOR_ROADS = {
+    "motorway", "motorway_link", "trunk", "trunk_link",
+    "primary", "primary_link",
+}
+# Дороги, по которым нельзя идти пешком: они прерывают маршрут.
+DRIVE_ONLY = {"motorway", "motorway_link", "trunk", "trunk_link"}
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    radius = 6_371_000.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    d_phi = phi2 - phi1
+    d_lambda = math.radians(lon2 - lon1)
+    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    return 2 * radius * math.asin(math.sqrt(a))
+
+
+def build_walk_graph(roads) -> nx.Graph:
+    """Граф пеших связей из линий дорог. Узлы — концы сегментов."""
+    graph = nx.Graph()
+    if roads is None or getattr(roads, "empty", True):
+        return graph
+
+    for _, row in roads.iterrows():
+        geometry = row.geometry
+        if geometry is None or geometry.is_empty:
+            continue
+        highway = str(row.get("highway") or "")
+        if highway in DRIVE_ONLY:
+            continue
+        parts = geometry.geoms if geometry.geom_type == "MultiLineString" else [geometry]
+        for line in parts:
+            coords = list(line.coords)
+            for (lon1, lat1), (lon2, lat2) in zip(coords, coords[1:]):
+                start = (round(lat1, 5), round(lon1, 5))
+                end = (round(lat2, 5), round(lon2, 5))
+                if start == end:
+                    continue
+                length = _haversine_m(lat1, lon1, lat2, lon2)
+                graph.add_edge(start, end, length=length, major=highway in MAJOR_ROADS)
+    return graph
+
+
+def _nearest_node(graph: nx.Graph, lat: float, lon: float):
+    best, best_distance = None, float("inf")
+    for node in graph.nodes:
+        distance = _haversine_m(lat, lon, node[0], node[1])
+        if distance < best_distance:
+            best, best_distance = node, distance
+    return best, best_distance
+
+
+def _water_point(coast, lat: float, lon: float):
+    """Ближайшая точка воды и расстояние до неё по прямой."""
+    if coast is None or getattr(coast, "empty", True):
+        return None, None
+    from shapely.geometry import Point
+    from shapely.ops import nearest_points
+
+    # Считаем расстояние до моря, а не до любой воды: река в центре города
+    # не делает отель «у моря». Пляж в этом регионе — однозначный признак.
+    if "kind" in coast.columns:
+        coast = coast[coast["kind"] == "beach"]
+        if coast.empty:
+            return None, None
+
+    origin = Point(lon, lat)
+    distances = coast.geometry.distance(origin)
+    if distances.empty or not (distances.min() < float("inf")):
+        return None, None
+    closest = coast.loc[distances.idxmin()].geometry
+    point, _ = nearest_points(closest, origin)
+    straight_m = _haversine_m(lat, lon, point.y, point.x)
+    return (point.y, point.x), straight_m
+
+
+def _elevation_penalty(graph, path, dem_path: str) -> float:
+    """Штраф за подъём по DEM: 1 минута на каждые 10 м набора высоты."""
+    if not dem_path or len(path) < 2:
+        return 0.0
+    try:
+        import rasterio
+
+        with rasterio.open(dem_path) as dem:
+            elevations = []
+            for lat, lon in path:
+                row, col = dem.index(lon, lat)
+                if 0 <= row < dem.height and 0 <= col < dem.width:
+                    elevations.append(float(dem.read(1, window=((row, row + 1), (col, col + 1)))[0, 0]))
+        climb = sum(
+            max(0.0, elevations[i + 1] - elevations[i])
+            for i in range(len(elevations) - 1)
+        )
+        return climb / 10.0
+    except Exception as exc:  # noqa: BLE001 - DEM может отсутствовать
+        logger.debug("не удалось учесть рельеф: %s", exc)
+        return 0.0
 
 
 def compute_walk_to_sea(
     hotel_lon: float,
     hotel_lat: float,
-    dem_path: str,
+    dem_path: str = "",
+    coast_gdf=None,
+    roads_gdf=None,
 ) -> dict:
-    """
-    Вычисляет время пешком до ближайшего пляжа.
-    
-    Алгоритм:
-    1. Строим пешеходный граф OSM в радиусе 1.5 км
-    2. Находим ближайший узел к отелю
-    3. Находим узлы у побережья (coastline OSM)
-    4. Считаем кратчайший путь
-    5. Добавляем штраф за уклон из DEM
-    6. Проверяем пересечение с trunk/primary highway
-    """
+    """Время пешком до ближайшей воды по дорожной сети OSM."""
+    water_point, straight_m = _water_point(coast_gdf, hotel_lat, hotel_lon)
+    if water_point is None:
+        return _no_data("в радиусе нет воды в слое OSM")
+
+    # Пешая доступность имеет смысл только для ближнего пляжа: 3 км по прямой
+    # уже не «отель у моря», и любое число минут здесь вводило бы в заблуждение.
+    if straight_m is not None and straight_m > 3000:
+        return _no_data(
+            f"ближайший пляж в {round(straight_m / 1000, 1)} км — это не пешая доступность",
+            straight_m,
+        )
+
+    graph = build_walk_graph(roads_gdf)
+    if graph.number_of_nodes() == 0:
+        return _no_data("нет дорожной сети для маршрута", straight_m)
+
+    origin, origin_gap = _nearest_node(graph, hotel_lat, hotel_lon)
+    target, target_gap = _nearest_node(graph, water_point[0], water_point[1])
+    if origin is None or target is None:
+        return _no_data("не удалось привязать точки к дорожной сети", straight_m)
+
     try:
-        # Строим граф
-        G = ox.graph_from_point(
-            (hotel_lat, hotel_lon),
-            dist=1500,
-            network_type="walk",
+        path = nx.shortest_path(graph, origin, target, weight="length")
+        path_m = sum(graph[a][b]["length"] for a, b in zip(path, path[1:]))
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        return _no_data("маршрут до воды не найден в графе дорог", straight_m)
+
+    path_m += origin_gap + target_gap
+    penalty = _elevation_penalty(graph, path, dem_path)
+    minutes = path_m / WALK_SPEED_M_MIN + penalty
+
+    if minutes > 60:
+        # Больше часа — это разрыв в дорожной сети или объезд, а не прогулка
+        # до пляжа. Возвращаем «нет данных» вместо правдоподобного числа.
+        return _no_data(
+            f"маршрут до пляжа длиннее часа ({round(minutes)} мин) — вероятен разрыв дорожной сети",
+            straight_m,
         )
-        
-        if len(G.nodes) == 0:
-            return _fallback_result(hotel_lon, hotel_lat)
-        
-        # Ближайший узел к отелю
-        origin = ox.distance.nearest_nodes(G, hotel_lon, hotel_lat)
-        
-        # Находим узлы у побережья
-        coast_nodes = _find_coast_nodes(G, hotel_lat, hotel_lon)
-        
-        if not coast_nodes:
-            return _fallback_result(hotel_lon, hotel_lat)
-        
-        # Кратчайший путь до ближайшего берега
-        target = min(
-            coast_nodes,
-            key=lambda n: nx.shortest_path_length(G, origin, n, weight="length")
-        )
-        
-        path = nx.shortest_path(G, origin, target, weight="length")
-        path_length_m = sum(
-            G[path[i]][path[i+1]].get("length", 0)
-            for i in range(len(path) - 1)
-        )
-        
-        # Штраф за уклон из DEM
-        elevation_penalty = _compute_elevation_penalty(path, G, dem_path)
-        
-        # 80 м/мин — базовая скорость ходьбы
-        walk_minutes = (path_length_m / 80.0) + elevation_penalty
-        
-        # Проверка пересечения с магистралью
-        crosses_highway = _check_crosses_highway(path, G)
-        
-        return {
-            "minutes": round(walk_minutes, 1),
-            "distance_m": round(path_length_m, 0),
-            "crosses_highway": crosses_highway,
-            "confidence": 0.92,
-            "source": "OSM+DEM",
-            "evidence": {
-                "path_nodes": len(path),
-                "elevation_penalty_min": round(elevation_penalty, 1),
-                "graph_nodes": len(G.nodes),
-            },
-        }
-    except Exception as e:
-        return _fallback_result(hotel_lon, hotel_lat, error=str(e))
 
+    crosses_highway = any(
+        graph[a][b].get("major") for a, b in zip(path, path[1:])
+    )
 
-def _find_coast_nodes(G, lat, lon, max_dist_km=2):
-    """Находит узлы графа, ближайшие к побережью."""
-    # Для демо: coastline в OSM — это way с natural=coastline
-    # Упрощённо: узлы, ближайшие к морю (западнее и ниже определённой широты)
-    coast_nodes = []
-    for node in G.nodes:
-        node_lat = G.nodes[node]["y"]
-        node_lon = G.nodes[node]["x"]
-        # Примерная проверка: узел рядом с водой
-        # В реальности — пересечение с coastline OSM
-        dist_to_sea = _estimate_dist_to_sea(node_lat, node_lon)
-        if dist_to_sea < 100:  # менее 100м до моря
-            coast_nodes.append(node)
-    return coast_nodes
-
-
-def _estimate_dist_to_sea(lat, lon):
-    """Грубая оценка расстояния до моря по координатам."""
-    # Для Калининградской области: море на западе
-    # Зеленоградск: ~54.96, 20.48 — море в ~500м на запад
-    # Куршская коса: море в ~200м
-    # Калининград: море в ~30км
-    coast_lon = 20.0  # примерная долгина побережья
-    dist_km = abs(lon - coast_lon) * 111 * 0.6  # грубо
-    return dist_km * 1000  # в метрах
-
-
-def _compute_elevation_penalty(path, G, dem_path):
-    """Вычисляет штраф за подъём из DEM."""
-    try:
-        with rasterio.open(dem_path) as dem:
-            elevations = []
-            for node in path:
-                lon = G.nodes[node]["x"]
-                lat = G.nodes[node]["y"]
-                try:
-                    row, col = dem.index(lon, lat)
-                    elev = dem.read(1)[row, col]
-                    elevations.append(float(elev))
-                except (IndexError, ValueError):
-                    elevations.append(0.0)
-        
-        # Сумма подъёмов (игнорируем спуски)
-        total_climb = sum(
-            max(0, elevations[i+1] - elevations[i])
-            for i in range(len(elevations) - 1)
-        )
-        
-        # Штраф: 1 мин на каждые 10м подъёма
-        return total_climb / 10.0
-    except Exception:
-        return 0.0
-
-
-def _check_crosses_highway(path, G):
-    """Проверяет, пересекает ли путь магистраль."""
-    for i in range(len(path) - 1):
-        edge = G[path[i]][path[i+1]]
-        highway = edge.get("highway", "")
-        if highway in ("trunk", "primary", "motorway"):
-            return True
-    return False
-
-
-def _fallback_result(lon, lat, error=None):
-    """Fallback если osmnx не смог построить граф."""
-    # Грубая оценка по расстоянию до моря
-    dist_to_sea = _estimate_dist_to_sea(lat, lon)
-    walk_min = dist_to_sea / 80.0
-    
     return {
-        "minutes": round(walk_min, 1),
-        "distance_m": round(dist_to_sea, 0),
-        "crosses_highway": dist_to_sea > 5000,
-        "confidence": 0.5,
-        "source": "OSM+DEM (fallback)",
-        "evidence": {"error": error, "method": "straight_line"},
+        "minutes": round(minutes, 1),
+        "distance_m": round(path_m),
+        "crosses_highway": crosses_highway,
+        "confidence": 0.85,
+        "source": "OSM roads + bathing water",
+        "evidence": {
+            "method": "shortest_path",
+            "straight_line_m": round(straight_m) if straight_m else None,
+            "detour_ratio": round(path_m / straight_m, 2) if straight_m else None,
+            "path_nodes": len(path),
+            "elevation_penalty_min": round(penalty, 1),
+            "graph_nodes": graph.number_of_nodes(),
+        },
+    }
+
+
+def _no_data(reason: str, straight_m: float | None = None) -> dict:
+    # source совпадает с успешным результатом намеренно: иначе «нет данных»
+    # не затрёт устаревшее число от того же расчёта, и в БД останутся
+    # две записи — старая неверная и новая пустая.
+    return {
+        "minutes": None,
+        "distance_m": round(straight_m) if straight_m else None,
+        "crosses_highway": None,
+        "confidence": 0.0,
+        "source": "OSM roads + bathing water",
+        "evidence": {"error": reason},
     }

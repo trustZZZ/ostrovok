@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { HashRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { Home } from './pages/Home';
 import { SearchPage } from './pages/Search';
@@ -7,6 +7,7 @@ import { Hotelier } from './pages/Hotelier';
 import { Compare } from './pages/Compare';
 import { AgentLog } from './components/AgentLog';
 import { Home as HomeIcon, Search, MessageSquare, GitCompare } from 'lucide-react';
+import { useStore } from './store';
 
 const Navigation: React.FC = () => {
   const location = useLocation();
@@ -54,6 +55,12 @@ const Navigation: React.FC = () => {
 };
 
 const App: React.FC = () => {
+  const loadHotels = useStore(state => state.loadHotels);
+
+  useEffect(() => {
+    void loadHotels();
+  }, [loadHotels]);
+
   return (
     <HashRouter>
       <div className="min-h-screen bg-gray-50">

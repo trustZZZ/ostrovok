@@ -1,20 +1,22 @@
 services:
   db:
     image: postgis/postgis:16-3.4
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: routely
-      POSTGRES_PASSWORD: routely
-      POSTGRES_DB: routely
+      POSTGRES_USER: ${POSTGRES_USER:-routely}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-routely}
+      POSTGRES_DB: ${POSTGRES_DB:-routely}
     expose:
       - "5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./data/seed.sql:/docker-entrypoint-initdb.d/seed.sql
+      - ./data/seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U routely"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-routely} -d ${POSTGRES_DB:-routely}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 12
+      start_period: 10s
 
   backend:
     build:
@@ -24,26 +26,74 @@ services:
     expose:
       - "8000"
     environment:
-      DATABASE_URL: postgresql+asyncpg://routely:routely@db:5432/routely
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://routely:routely@db:5432/routely}
+      LLM_API_KEY: ${LLM_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.aitunnel.ru/v1}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
       USE_MOCK_LLM: ${USE_MOCK_LLM:-1}
-      DEM_PATH: /data/dem.tif
-      BUILDINGS_PATH: /data/buildings.gpkg
+      DEM_PATH: ${DEM_PATH:-/data/dem.tif}
+      BUILDINGS_PATH: ${BUILDINGS_PATH:-/data/buildings.gpkg}
     volumes:
-      - ./data:/data
+      - ./data:/data:ro
       - ./backend:/app
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=3).status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   frontend:
     build:
       context: .
       dockerfile: ./frontend/Dockerfile
+    restart: unless-stopped
     ports:
-      - "8000:80"
+      - "${APP_PORT:-8080}:8080"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---- Одноразовые задачи: docker compose --profile tools run --rm <service> ----
+  seed:
+    profiles: ["tools"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      USE_MOCK_LLM: "1"
+      DEM_PATH: /data/dem.tif
+      BUILDINGS_PATH: /data/buildings.gpkg
+    volumes:
+      - ./data:/data
+      - ./scripts:/scripts:ro
+    command: ["python", "/scripts/fetch_data.py"]
+
+  test:
+    profiles: ["tools"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    environment:
+      USE_MOCK_LLM: "1"
+      DEM_PATH: /data/dem.tif
+      BUILDINGS_PATH: /data/buildings.gpkg
+    volumes:
+      - ./data:/data:ro
 
 volumes:
   pgdata:
