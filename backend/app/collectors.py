@@ -106,7 +106,15 @@ def load_coast():
 # Геоинструменты
 # ---------------------------------------------------------------------------
 async def tool_sunset_view(ctx: HotelContext) -> ToolResult:
+    from app.tools.facade import building_wall_azimuths
     from app.tools.sunset_view import compute_sunset_view
+
+    buildings = load_buildings()
+    # Стены считаются по контуру здания из OSM. Направление на ближайшую
+    # улицу — только оценка входа: у прямоугольного дома стены смотрят в
+    # четыре стороны, и закат виден из западных номеров даже тогда, когда
+    # главный фасад смотрит на юг.
+    facade_walls = await asyncio.to_thread(building_wall_azimuths, buildings, ctx.lon, ctx.lat)
 
     result = await asyncio.to_thread(
         compute_sunset_view,
@@ -114,8 +122,9 @@ async def tool_sunset_view(ctx: HotelContext) -> ToolResult:
         hotel_lat=ctx.lat,
         total_floors=ctx.floors,
         dem_path=settings.DEM_PATH,
-        buildings_gdf=load_buildings(),
+        buildings_gdf=buildings,
         facade_azimuth=ctx.facade_azimuth,
+        facade_walls=facade_walls,
     )
     return ToolResult(
         value={
@@ -123,6 +132,7 @@ async def tool_sunset_view(ctx: HotelContext) -> ToolResult:
             "from_floor": result.from_floor,
             "months": result.months,
             "azimuth_deg": result.azimuth_deg,
+            "west_share": result.west_share,
         },
         source="SRTM+OSM",
         confidence=result.confidence,

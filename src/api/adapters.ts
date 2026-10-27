@@ -137,8 +137,21 @@ function formatDetail(feature: ApiFeature): string {
           : null;
         if (months) parts.push(`Месяцы: ${months}`);
         if (value.azimuth_deg) parts.push(`азимут ${Math.round(value.azimuth_deg)}°`);
+        // «Виден» означает «виден из части номеров»: считаем по стенам
+        // контура здания из OSM, а не по входу с улицы.
+        const walls = Array.isArray(evidence.facade_walls) ? evidence.facade_walls.length : 0;
+        if (walls) {
+          parts.push(`стены здания: ${walls}`);
+          if (typeof value.west_share === 'number') {
+            parts.push(`на закат смотрит ${Math.round(value.west_share * 100)}% фасада`);
+          }
+        }
       } else if (value.reason) {
         parts.push(String(value.reason));
+      } else if (evidence.block_reason === 'facade_facing_away') {
+        parts.push('Ни одна стена не смотрит на запад');
+      } else if (evidence.block_reason === 'obstructed') {
+        parts.push('Вид закрыт застройкой на западе');
       }
       break;
     }

@@ -42,7 +42,12 @@ def angular_difference(first: float, second: float) -> float:
     return abs((first - second + 180.0) % 360.0 - 180.0)
 
 
-def block_reason(visible: bool, checked_months: int, facade_azimuth: float | None) -> str | None:
+def block_reason(
+    visible: bool,
+    checked_months: int,
+    facade_azimuth: float | None,
+    walls_known: bool = False,
+) -> str | None:
     """Почему закат не виден: окна не туда или вид загорожен.
 
     Разные причины требуют разных действий: в первом случае нужен номер на
@@ -50,7 +55,7 @@ def block_reason(visible: bool, checked_months: int, facade_azimuth: float | Non
     """
     if visible:
         return None
-    if facade_azimuth is not None and checked_months == 0:
+    if checked_months == 0 and (facade_azimuth is not None or walls_known):
         return "facade_facing_away"
     return "obstructed"
 
@@ -63,6 +68,9 @@ class SunsetViewResult:
     azimuth_deg: float
     confidence: float
     evidence: dict
+    # Доля длины стен, обращённых в сторону заката: 0.25 — «западная стена
+    # из четырёх». None — стен в данных нет, направление неизвестно.
+    west_share: float | None = None
 
 
 @lru_cache(maxsize=2)
@@ -109,14 +117,21 @@ def compute_sunset_view(
     buildings_gdf: gpd.GeoDataFrame | None,
     check_months: list[int] | None = None,
     facade_azimuth: float | None = None,
+    facade_walls: list[dict] | None = None,
 ) -> SunsetViewResult:
-    """Считает вид на закат с учётом сезона, рельефа, зданий и стороны фасада.
+    """Считает вид на закат с учётом сезона, рельефа, зданий и сторон здания.
 
-    ``facade_azimuth`` — оценка ориентации главного фасада в градусах от севера.
-    Если она известна и закат оказывается вне сектора обзора из окна, месяц
-    не засчитывается: окна смотрят в другую сторону. Когда оценки нет, расчёт
-    выполняется как раньше, но уверенность снижается — сторона фасада
-    не проверена.
+    ``facade_walls`` — направления наружных стен здания из контура OSM
+    (``facade.building_wall_azimuths``). Если они известны, месяц засчитывается
+    при открытом горизонте хотя бы с одной стены: характеристика отвечает на
+    вопрос «есть ли в отеле номера с видом на закат», а не «смотрит ли на запад
+    вход». Доля таких стен возвращается в ``west_share``.
+
+    ``facade_azimuth`` — запасная оценка ориентации главного фасада по
+    ближайшей улице. Используется, только когда контура здания нет. Если
+    направление известно, а закат оказывается вне сектора обзора из окна,
+    месяц не засчитывается: окна смотрят в другую сторону. Когда неизвестно
+    ни то, ни другое, расчёт выполняется как раньше, но уверенность снижается.
     """
     global _DEM_PATH
     _DEM_PATH = dem_path
@@ -140,6 +155,7 @@ def compute_sunset_view(
     azimuths: list[float] = []
     buildings_on_ray = 0
     facade_offsets: dict[str, float] = {}
+    wall_offsets: dict[str, float] = {}
     last_ray: LineString | None = None
     checked_months = 0
 
@@ -149,8 +165,14 @@ def compute_sunset_view(
 
         # Сначала проверяем, смотрят ли окна вообще в сторону заката: иначе
         # «закат не виден» не отличить от «окна выходят на восток».
+        # Стены здания точнее оценки по улице: закат виден из западных
+        # номеров и тогда, когда главный фасад (вход) смотрит на юг.
         faces_sunset = None
-        if facade_azimuth is not None:
+        if facade_walls:
+            offset = min(angular_difference(wall["azimuth"], azimuth) for wall in facade_walls)
+            wall_offsets[str(month)] = round(offset, 1)
+            faces_sunset = offset <= FACADE_TOLERANCE_DEG
+        elif facade_azimuth is not None:
             offset = angular_difference(facade_azimuth, azimuth)
             facade_offsets[str(month)] = round(offset, 1)
             faces_sunset = offset <= FACADE_TOLERANCE_DEG
@@ -193,11 +215,26 @@ def compute_sunset_view(
     buildings_with_height = _count_known_height(buildings_gdf, observer)
 
     confidence = _confidence(dem_ok, buildings_in_buffer, buildings_gdf.empty)
-    if facade_azimuth is None:
-        # Без стороны фасада вывод «закат виден» может быть неверным: окна
+    if facade_azimuth is None and not facade_walls:
+        # Без направления окон вывод «закат виден» может быть неверным: окна
         # могли выходить на восток. Уверенность снижается, но результат
         # не отбрасывается — иначе пропадали бы отели без данных OSM.
         confidence = round(confidence * 0.9, 2)
+
+    # Доля фасада, обращённая к закату. 0.25 — западная стена из четырёх:
+    # значит закат виден из части номеров, а не изо всех. Это меняет совет
+    # гостю («просите западную сторону»), поэтому доля хранится вместе
+    # со значением, а не только в evidence.
+    west_share: float | None = None
+    if facade_walls:
+        mean_azimuth = float(np.mean(azimuths)) if azimuths else 0.0
+        total_length = sum(wall["length_m"] for wall in facade_walls) or 1.0
+        facing_length = sum(
+            wall["length_m"]
+            for wall in facade_walls
+            if angular_difference(wall["azimuth"], mean_azimuth) <= FACADE_TOLERANCE_DEG
+        )
+        west_share = round(facing_length / total_length, 2)
 
     # Диагностика: максимальная высота рельефа вдоль луча — по ней видно,
     # что именно перекрывает вид (дюны/холм или застройка).
@@ -212,6 +249,7 @@ def compute_sunset_view(
         months=visible_months,
         azimuth_deg=round(float(np.mean(azimuths)), 1) if azimuths else 0.0,
         confidence=confidence,
+        west_share=west_share,
         evidence={
             "method": "raycasting DEM + OSM buildings",
             "dem_available": dem_ok,
@@ -236,12 +274,36 @@ def compute_sunset_view(
             "facade_azimuth_deg": facade_azimuth,
             "facade_tolerance_deg": FACADE_TOLERANCE_DEG,
             "facade_angle_to_sunset": facade_offsets,
-            "facade_source": (
-                "оценка по ближайшей улице OSM; сторона входа не подтверждена"
-                if facade_azimuth is not None
-                else "неизвестна — сторона фасада не учитывалась"
+            "facade_model": (
+                "стены здания из контура OSM"
+                if facade_walls
+                else (
+                    "оценка по ближайшей улице OSM"
+                    if facade_azimuth is not None
+                    else "направление окон неизвестно"
+                )
             ),
-            "block_reason": block_reason(bool(visible_months), checked_months, facade_azimuth),
+            "facade_walls": [
+                {"azimuth": wall["azimuth"], "length_m": wall["length_m"]}
+                for wall in (facade_walls or [])
+            ],
+            "facade_wall_angle_to_sunset": wall_offsets,
+            "west_share": west_share,
+            "facade_source": (
+                "контур здания OSM: у дома несколько стен, вид считается по лучшей из них"
+                if facade_walls
+                else (
+                    "оценка по ближайшей улице OSM; сторона входа не подтверждена"
+                    if facade_azimuth is not None
+                    else "неизвестна — сторона фасада не учитывалась"
+                )
+            ),
+            "block_reason": block_reason(
+                bool(visible_months),
+                checked_months,
+                facade_azimuth,
+                walls_known=bool(facade_walls),
+            ),
         },
     )
 
