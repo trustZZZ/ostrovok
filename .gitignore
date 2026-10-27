@@ -55,60 +55,6 @@ build/
 # Отчёт замера: генерируется `make eval`, в репозитории не нужен
 /data/eval_report.json
 
-
-# ================= Артефакты и резервные копии =================
-.tools/
-workspace*.tar
-*.log
-
-# ================= IDE / ОС =================
-.idea/
-.vscode/
-.DS_Store
-Thumbs.db
-
-# ================= Секреты и локальная конфигурация =================
-# Файлы окружения содержат секреты (ключи API, пароли БД) — их нельзя коммитить.
-# Шаблон .env.example (без секретов) следует хранить в репозитории.
-.env
-.env.local
-.env.*.local
-
-# ================= Python =================
-# Виртуальное окружение
-.venv/
-venv/
-env/
-.ENV/
-
-# Кэши и байт-код
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-
-# Инструменты тестирования и анализа
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-*.egg-info/
-
-# ================= Node / Frontend =================
-node_modules/
-.next/
-out/
-*.tsbuildinfo
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
-# Сборки
-dist/
-build/
-
 # ================= Артефакты и резервные копии =================
 .tools/
 workspace*.tar

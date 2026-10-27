@@ -2,6 +2,10 @@
 .git
 .gitignore
 
+# Секреты: .env читает compose, в контекст сборки ему попадать незачем
+.env
+.env.local
+
 # JS
 node_modules
 dist

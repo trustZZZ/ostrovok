@@ -40,3 +40,10 @@ dev = [
     "pytest-asyncio",
     "httpx",
 ]
+
+[tool.pytest.ini_options]
+# Тесты лежат только здесь. Раньше набор отсутствовал вовсе, и `make test`
+# падал с кодом 5 («no tests ran») — цель в Makefile выглядела рабочей,
+# но ничего не проверяла.
+testpaths = ["tests"]
+pythonpath = ["."]
