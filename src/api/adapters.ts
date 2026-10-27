@@ -206,6 +206,10 @@ export function mapFeature(feature: ApiFeature): HotelFeature {
     detail: formatDetail(feature),
     confidence: feature.confidence ?? 0,
     source: feature.source,
+    // Достоверность — часть значения, а не украшение карточки: по этим
+    // флагам интерфейс показывает «устарело» и «источники расходятся».
+    stale: feature.stale === true,
+    disputed: feature.disputed === true,
     // Исходное значение хранится рядом с готовой строкой: сравнение отелей
     // читает поля по реестру характеристик, а не текст для человека.
     raw: feature.value,

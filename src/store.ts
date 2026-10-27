@@ -7,6 +7,7 @@ import {
   getHotelierInbox,
   isApiAvailable,
   listHotels,
+  requestHotelRefresh,
   searchHotels,
 } from './api/client';
 
@@ -32,6 +33,10 @@ interface AppState {
   setSearchQuery: (query: string) => void;
   performSearch: (query: string) => Promise<void>;
   loadHotels: () => Promise<void>;
+  /** Перечитывает отели, вопросы и значения после ответа или перепроверки. */
+  reloadHotels: () => Promise<void>;
+  /** Запускает перепроверку отеля, возвращает устаревшие характеристики. */
+  refreshHotel: (hotelId: number) => Promise<string[]>;
   answerQuestion: (hotelId: number, questionId: number, answer: string) => void;
   addAgentLog: (msg: string) => void;
   clearAgentLog: () => void;
@@ -41,10 +46,12 @@ interface AppState {
  * Вопросы отельеру приходят отдельной ручкой `/api/hotelier/inbox`,
  * поэтому их нужно разложить по отелям: карточка и кабинет читают
  * `hotel.questions`, а не плоский список.
+ *
+ * Список заменяется целиком, включая пустой: инбокс отдаёт и историю
+ * ответов, поэтому «вопросов больше нет» — это факт из БД, а не повод
+ * оставить на экране строки из прошлого ответа.
  */
 function attachQuestions(list: Hotel[], inbox: any[]): Hotel[] {
-  if (inbox.length === 0) return list;
-
   return list.map(hotel => {
     const questions: HotelierQuestion[] = inbox
       .filter(item => item.hotel_id === hotel.id)
@@ -54,10 +61,26 @@ function attachQuestions(list: Hotel[], inbox: any[]): Hotel[] {
         question: item.question,
         status: (item.status ?? 'pending') as HotelierQuestion['status'],
         asked_at: item.asked_at ?? '',
+        answer_raw: item.answer_raw ?? undefined,
+        answer_parsed: item.answer_parsed ?? undefined,
+        answered_at: item.answered_at ?? undefined,
+        // Уверенность и значение приходят из записанной характеристики
+        // (source=hotelier). Клиент их не вычисляет и не подставляет.
+        confidence: typeof item.confidence === 'number' ? item.confidence : undefined,
+        value: item.value ?? undefined,
       }));
 
-    return questions.length > 0 ? { ...hotel, questions } : hotel;
+    return { ...hotel, questions };
   });
+}
+
+/** Отели, вопросы и реестр одним заходом: один снимок состояния из трёх ручек. */
+async function fetchHotelsFromApi(): Promise<{ hotels: Hotel[]; registry: FeatureSpec[] } | null> {
+  const loaded = await listHotels(hotels);
+  if (loaded.length === 0) return null;
+
+  const [inbox, registry] = await Promise.all([getHotelierInbox('all'), getFeatureRegistry()]);
+  return { hotels: attachQuestions(loaded, inbox), registry };
 }
 
 /**
@@ -136,19 +159,36 @@ export const useStore = create<AppState>((set, get) => ({
       return;
     }
 
-    const loaded = await listHotels(hotels);
-    if (loaded.length === 0) {
+    const data = await fetchHotelsFromApi();
+    if (data === null) {
       set({ dataSource: 'demo' });
       return;
     }
 
-    // Вопросы отельеру и реестр характеристик лежат отдельными ручками:
-    // без реестра страница сравнения не знает, как трактовать значения.
-    const [inbox, featureRegistry] = await Promise.all([
-      getHotelierInbox(),
-      getFeatureRegistry(),
-    ]);
-    set({ hotels: attachQuestions(loaded, inbox), featureRegistry, dataSource: 'api' });
+    set({ hotels: data.hotels, featureRegistry: data.registry, dataSource: 'api' });
+  },
+
+  /**
+   * Повторное чтение после записи (ответ отельера, перепроверка).
+   * В отличие от loadHotels не переводит интерфейс в демо-режим: если ручка
+   * моргнула, показываем прежние данные, а не подменяем их выдуманными.
+   */
+  reloadHotels: async () => {
+    const data = await fetchHotelsFromApi();
+    if (data === null) return;
+    set({ hotels: data.hotels, featureRegistry: data.registry, dataSource: 'api' });
+  },
+
+  refreshHotel: async (hotelId: number) => {
+    const started = await requestHotelRefresh(hotelId);
+    if (started === null) {
+      set(state => ({
+        agentLog: [...state.agentLog, 'Перепроверка недоступна: бэкенд не отвечает'],
+      }));
+      return [];
+    }
+    set(state => ({ agentLog: [...state.agentLog, started.message] }));
+    return started.stale_features;
   },
 
   performSearch: async (query: string) => {
@@ -178,6 +218,9 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   answerQuestion: (hotelId: number, questionId: number, answer: string) => {
+    // Оптимистично фиксируем только текст ответа. Разбор, уверенность и
+    // значение записывает бэкенд: подставлять их на клиенте нельзя, иначе
+    // карточка показывала бы confidence, которого нет в базе.
     set(state => ({
       hotels: state.hotels.map(h => {
         if (h.id !== hotelId) return h;
@@ -185,12 +228,7 @@ export const useStore = create<AppState>((set, get) => ({
           ...h,
           questions: h.questions.map(q => {
             if (q.id !== questionId) return q;
-            return {
-              ...q,
-              answer_raw: answer,
-              status: 'answered' as const,
-              answer_parsed: { parsed_by: 'LLM', confidence: 0.92 },
-            };
+            return { ...q, answer_raw: answer, status: 'answered' as const };
           }),
         };
       }),
@@ -200,13 +238,18 @@ export const useStore = create<AppState>((set, get) => ({
     // источником «hotelier». Без этого шаг демо «ответ отельера» оставался
     // только в интерфейсе.
     void sendAnswer(hotelId, questionId, answer).then(delivered => {
-      if (delivered) return;
-      set(state => ({
-        agentLog: [
-          ...state.agentLog,
-          'Ответ отельера не доставлен на бэкенд: изменения видны только в интерфейсе',
-        ],
-      }));
+      if (!delivered) {
+        set(state => ({
+          agentLog: [
+            ...state.agentLog,
+            'Ответ отельера не доставлен на бэкенд: изменения видны только в интерфейсе',
+          ],
+        }));
+        return;
+      }
+      // Что именно записалось — читаем из БД, а не из ответа на запрос:
+      // показанное значение и значение в поиске должны совпадать.
+      void get().reloadHotels();
     });
   },
 

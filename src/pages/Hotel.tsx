@@ -4,16 +4,25 @@ import { useStore } from '../store';
 import { Map } from '../components/Map';
 import { FeatureBadge } from '../components/FeatureBadge';
 import { ConfidenceBar } from '../components/ConfidenceBar';
-import { ArrowLeft, MapPin, Star, MessageSquare, GitCompare, ExternalLink } from 'lucide-react';
+import { ArrowLeft, MapPin, Star, MessageSquare, GitCompare, ExternalLink, AlertTriangle, RefreshCw } from 'lucide-react';
+
+/** Значение, записанное из ответа отельера, — как его увидит гость. */
+function describeRecorded(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'boolean') return value ? 'да' : 'нет';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
 
 export const HotelPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { hotels, toggleCompare, selectedHotelIds } = useStore();
+  const { hotels, toggleCompare, selectedHotelIds, refreshHotel } = useStore();
   const [expandedFeature, setExpandedFeature] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const hotel = hotels.find(h => h.id === parseInt(id || '0'));
-  
+
   if (!hotel) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -28,7 +37,15 @@ export const HotelPage: React.FC = () => {
 
   const pendingQuestions = hotel.questions.filter(q => q.status === 'pending');
   const answeredQuestions = hotel.questions.filter(q => q.status === 'answered');
+  const staleFeatures = hotel.features.filter(f => f.stale);
+  const disputedFeatures = hotel.features.filter(f => f.disputed);
   const isInCompare = selectedHotelIds.includes(hotel.id);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await refreshHotel(hotel.id);
+    setRefreshing(false);
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -107,6 +124,34 @@ export const HotelPage: React.FC = () => {
               Нажмите на карточку для подробностей.
             </p>
 
+            {(staleFeatures.length > 0 || disputedFeatures.length > 0) && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-amber-500 mt-0.5 shrink-0" />
+                  <div className="flex-1">
+                    {staleFeatures.length > 0 && (
+                      <p className="text-sm font-medium text-amber-900">
+                        Устарели: {staleFeatures.map(f => f.label).join(', ')}
+                      </p>
+                    )}
+                    <p className="text-xs text-amber-700 mt-1">
+                      {staleFeatures.length > 0
+                        ? 'Срок актуальности истёк: рядом могли построить дом или измениться шум. Значение не удалено, но требует перепроверки.'
+                        : 'Источники дали разные значения — разбор доступен в кабинете отельера.'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleRefresh}
+                    disabled={refreshing}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition shrink-0"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+                    {refreshing ? 'Запускаем…' : 'Перепроверить'}
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="grid gap-3">
               {hotel.features.map(feature => (
                 <FeatureBadge
@@ -166,12 +211,23 @@ export const HotelPage: React.FC = () => {
                           <p className="text-sm font-medium text-emerald-900">Вопрос: {q.question}</p>
                           <div className="mt-2 bg-white rounded-lg p-3 border border-emerald-100">
                             <p className="text-sm text-gray-700">{q.answer_raw}</p>
-                            <div className="flex items-center gap-2 mt-2">
+                            <div className="flex items-center gap-2 mt-2 flex-wrap">
                               <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">
                                 Источник: отельер
                               </span>
-                              <ConfidenceBar value={0.92} size="sm" />
+                              {typeof q.confidence === 'number' ? (
+                                <ConfidenceBar value={q.confidence} size="sm" />
+                              ) : (
+                                <span className="text-xs text-gray-500">уверенность не записана</span>
+                              )}
+                              {q.answered_at && (
+                                <span className="text-xs text-gray-400">{q.answered_at.slice(0, 10)}</span>
+                              )}
                             </div>
+                            <p className="text-xs text-gray-500 mt-2">
+                              Записано в характеристики:{' '}
+                              <span className="font-medium text-gray-700">{describeRecorded(q.value)}</span>
+                            </p>
                           </div>
                         </div>
                       </div>

@@ -19,10 +19,22 @@ export const FeatureBadge: React.FC<FeatureBadgeProps> = ({ feature, expanded = 
       <div className="flex items-start gap-3">
         <span className="text-2xl">{feature.icon}</span>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <h4 className="font-semibold text-gray-900 text-sm">{feature.label}</h4>
-            <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
-              {feature.source}
+            <span className="flex items-center gap-1 shrink-0">
+              {feature.stale && (
+                <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">
+                  устарело
+                </span>
+              )}
+              {feature.disputed && (
+                <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">
+                  расходятся
+                </span>
+              )}
+              <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">
+                {feature.source}
+              </span>
             </span>
           </div>
           <p className="text-ocean-700 font-medium mt-1">{feature.value}</p>

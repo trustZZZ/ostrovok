@@ -8,8 +8,8 @@
 ## Быстрый старт
 
 ```bash
-git clone <URL репозитория>
-cd <repo>
+git clone https://github.com/trustZZZ/ostrovok.git
+cd ostrovok
 cp .env.example .env      # опционально: без ключа LLM работает в мок-режиме
 docker compose up --build
 # открыть http://localhost:8080
@@ -51,9 +51,15 @@ Docker Desktop (или Docker Engine) должен быть запущен. Пе
 | `OPENAI_API_KEY`  | пусто                                                         | Альтернативная переменная для того же ключа             |
 | `LLM_BASE_URL`    | `https://api.aitunnel.ru/v1`                                  | Base URL LLM                                            |
 | `LLM_MODEL`       | `deepseek-chat`                                               | Модель                                                  |
+| `LLM_TIMEOUT_S`   | `20`                                                          | Таймаут одного запроса к LLM, секунды                   |
 | `USE_MOCK_LLM`    | `1`                                                           | `1` — LLM не вызывается, ответы детерминированные       |
 | `DEM_PATH`        | `/data/dem.tif`                                               | Путь к DEM внутри контейнера                            |
 | `BUILDINGS_PATH`  | `/data/buildings.gpkg`                                        | Путь к зданиям OSM внутри контейнера                    |
+| `NOISE_PATH`      | `/data/noise_sources.geojson`                                 | Путь к источникам шума внутри контейнера                |
+| `BEACHES_PATH`    | `/data/beaches.geojson`                                       | Путь к воде и пляжам внутри контейнера                  |
+| `HOTELS_PATH`     | `/data/hotels.geojson`                                        | Путь к файлу отелей (источник истины демо-набора)       |
+| `GROUND_TRUTH`    | `/data/ground_truth.csv`                                      | Разметка для `make eval`                                |
+| `EVAL_REPORT`     | `/data/eval_report.json`                                      | Куда `make eval` пишет отчёт                            |
 
 ### Про ключ LLM
 
@@ -133,7 +139,7 @@ API бэкенда:
 | GET   | `/api/features`                                 | Реестр характеристик: инструменты, TTL, вопросы отельеру         |
 | GET   | `/api/conflicts`                                | Расхождения источников: все варианты и выбранное значение        |
 | GET   | `/api/agent/{thread_id}/stream`                 | SSE-стрим шагов агента                                          |
-| GET   | `/api/hotelier/inbox`                           | Вопросы отельеру                                                |
+| GET   | `/api/hotelier/inbox?status=all`                | Вопросы отельеру и история ответов (`pending`/`answered`/`all`) |
 | POST  | `/api/hotelier/{hotel_id}/answer/{question_id}` | Ответ отельера (размораживает граф)                             |
 | POST  | `/api/hotelier/{hotel_id}/resolve/{feature}`    | Отельер подтверждает или исправляет значение — снимает `disputed` |
 | GET   | `/api/routes`                                   | Витрина маршрутов                                               |
@@ -221,10 +227,10 @@ BACKEND (FastAPI :8000)
 | Хранение и достоверность      | работает: `source`, `confidence`, `raw_evidence`, `computed_at`, `expires_at` |
 | Расширяемость                 | работает: новая характеристика = блок в `features.yaml`                      |
 | Поиск по характеристикам      | работает: ранжирование по `hotel_features` + объяснение из evidence          |
-| Кабинет отельера              | работает: вопросы, ответы, разбор расхождений (`/api/hotelier/.../resolve`)  |
+| Кабинет отельера              | работает: вопросы и история ответов с реальным `confidence` из БД, разбор расхождений (`/api/hotelier/.../resolve`), очередь перепроверки (`/api/hotels/stale` → `refresh`) |
 | Характеристики номеров        | работает: `room_west_windows`, `room_silence`, `room_balcony` — из ответов отельера |
-| Противоречия источников       | работает: `disputed` + `disputed_with`, выбор по `authoritative`, разбор в кабинете |
-| Актуализация                  | работает: `expires_at` → `/api/hotels/stale` → `/api/hotels/{id}/refresh`    |
+| Противоречия источников       | работает: `disputed` + `disputed_with`, выбор по `authoritative`; в кабинете видно все варианты и кнопка «Считать верным» снимает расхождение |
+| Актуализация                  | работает: `expires_at` → карточка отеля и кабинет помечают значение как «устарело», кнопка «Перепроверить» вызывает `/api/hotels/{id}/refresh` |
 | Метрики качества              | `make eval`: покрытие, независимые baseline для заката, шума и пешего пути, точность на разметке |
 
 ## Метрики качества
@@ -243,6 +249,7 @@ make eval    # docker compose --profile tools run --rm seed python /scripts/eval
 | `noise_score`    | 11/12 (92%) | ранговая корреляция +0.91 (n=11) с плотностью источников               |
 | `walk_to_sea`    | 8/12 (67%)  | MAE 4.8 мин к независимой оценке «по прямой × 1.3» (n=8)               |
 | `climate_summer` | 12/12 (100%) | данные Open-Meteo, проверяются на стороне источника                    |
+| Вопросы отельеру | 4/12 отелей (5 вопросов) | доля отелей, где агент не уверен и спрашивает: 33%         |
 
 Что эти числа означают честно:
 
@@ -291,6 +298,7 @@ backend/
 │   ├── agents/graph.py    # LangGraph: plan → collect → save → conflicts → …
 │   ├── tools/             # sunset_view, noise_score, walk_to_sea, facade
 │   └── routers/           # search, hotels, hotelier, routes, agent (SSE)
+├── tests/                 # Юнит-тесты чистых функций (pytest, `make test`)
 ├── Dockerfile             # Multi-stage, непривилегированный пользователь
 ├── Dockerfile.dev         # Только для тестов (pytest)
 └── pyproject.toml

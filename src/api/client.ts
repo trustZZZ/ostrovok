@@ -140,11 +140,18 @@ export async function enrichHotel(hotelId: number): Promise<{ thread_id: string 
   }
 }
 
-/** Инбокс вопросов отельерам. */
-export async function getHotelierInbox(): Promise<any[]> {
+/**
+ * Инбокс вопросов отельерам.
+ *
+ * `all` — очередь и история ответов: без истории кабинет не может показать,
+ * что именно отельер ответил и какое значение из ответа записалось.
+ */
+export async function getHotelierInbox(
+  status: 'pending' | 'answered' | 'all' = 'all',
+): Promise<any[]> {
   if (!(await isApiAvailable())) return [];
   try {
-    const res = await fetchWithTimeout(`${API_BASE}/hotelier/inbox`);
+    const res = await fetchWithTimeout(`${API_BASE}/hotelier/inbox?status=${status}`);
     return res.ok ? await res.json() : [];
   } catch {
     return [];
@@ -190,5 +197,113 @@ export async function getFeatureRegistry(): Promise<FeatureSpec[]> {
     return (await res.json()) as FeatureSpec[];
   } catch {
     return [];
+  }
+}
+
+// --- Достоверность: противоречия источников и актуализация ---------------
+
+/** Вариант значения от одного источника. */
+export interface ConflictVariant {
+  source: string;
+  confidence: number;
+  value: unknown;
+}
+
+/** Противоречие: что говорят источники и что система выбрала. */
+export interface ApiConflict {
+  hotel_id: number;
+  feature: string;
+  title: string;
+  /** Кому верим при расхождении: `geo` или `hotelier`. */
+  authoritative: string | null;
+  variants: ConflictVariant[];
+  resolved: { source: string | null; value: unknown };
+}
+
+/** Характеристика с истёкшим сроком актуальности. */
+export interface ApiStaleFeature {
+  hotel_id: number;
+  hotel_name: string;
+  key: string;
+  source: string;
+  confidence: number;
+  computed_at: string | null;
+  expires_at: string | null;
+  days_overdue: number | null;
+}
+
+export interface RefreshResponse {
+  thread_id: string;
+  status: string;
+  /** Характеристики, из-за которых запущена перепроверка. */
+  stale_features: string[];
+  message: string;
+}
+
+export interface ResolveResponse {
+  status: string;
+  feature: string;
+  /** Расхождение осталось: отельер считает иначе, чем геоданные. */
+  still_disputed: boolean;
+  rows: { source: string; value: unknown; confidence: number; disputed: boolean }[];
+}
+
+/** Противоречия источников — вход для разбора в кабинете отельера. */
+export async function getConflicts(): Promise<ApiConflict[]> {
+  if (!(await isApiAvailable())) return [];
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/conflicts`);
+    if (!res.ok) throw new Error(`conflicts: HTTP ${res.status}`);
+    return (await res.json()) as ApiConflict[];
+  } catch (error) {
+    console.warn('Противоречия недоступны', error);
+    return [];
+  }
+}
+
+/** Очередь перепроверки: характеристики, у которых истёк срок. */
+export async function getStaleFeatures(limit = 50): Promise<ApiStaleFeature[]> {
+  if (!(await isApiAvailable())) return [];
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/hotels/stale?limit=${limit}`);
+    if (!res.ok) throw new Error(`hotels/stale: HTTP ${res.status}`);
+    return (await res.json()) as ApiStaleFeature[];
+  } catch (error) {
+    console.warn('Список устаревших данных недоступен', error);
+    return [];
+  }
+}
+
+/** Перепроверка отеля: агент пересобирает характеристики в фоне. */
+export async function requestHotelRefresh(hotelId: number): Promise<RefreshResponse | null> {
+  if (!(await isApiAvailable())) return null;
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/hotels/${hotelId}/refresh`, { method: 'POST' });
+    return res.ok ? ((await res.json()) as RefreshResponse) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Отельер подтверждает или исправляет значение — противоречие пересчитывается. */
+export async function resolveFeature(
+  hotelId: number,
+  featureKey: string,
+  value: string | boolean | number,
+  note?: string,
+): Promise<ResolveResponse | null> {
+  if (!(await isApiAvailable())) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `${API_BASE}/hotelier/${hotelId}/resolve/${featureKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value, note }),
+      },
+    );
+    return res.ok ? ((await res.json()) as ResolveResponse) : null;
+  } catch {
+    return null;
   }
 }

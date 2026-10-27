@@ -6,6 +6,10 @@ export interface HotelFeature {
   detail: string;
   confidence: number;
   source: string;
+  /** Срок актуальности истёк — значение требует перепроверки. */
+  stale?: boolean;
+  /** Источники дали разные значения — расхождение разбирается в кабинете. */
+  disputed?: boolean;
   /** Структурированное значение из API — по нему сравниваются отели. */
   raw?: unknown;
   evidence?: Record<string, any>;
@@ -19,6 +23,11 @@ export interface HotelierQuestion {
   answer_parsed?: Record<string, any>;
   status: 'pending' | 'answered' | 'disputed';
   asked_at: string;
+  answered_at?: string;
+  /** Уверенность значения, записанного из ответа (источник «отельер»). */
+  confidence?: number;
+  /** Значение характеристики, которое записалось из ответа. */
+  value?: unknown;
 }
 
 export interface Hotel {

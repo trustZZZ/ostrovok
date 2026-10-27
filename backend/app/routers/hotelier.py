@@ -3,12 +3,13 @@ API роутер отельера.
 """
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from datetime import datetime
 from app.db import get_db
+from app.feature_registry import get_feature
 from app.models import Hotel, HotelFeature, HotelierQuestion
 
 logger = logging.getLogger(__name__)
@@ -21,26 +22,84 @@ class AnswerRequest(BaseModel):
 
 
 @router.get("/hotelier/inbox")
-async def inbox(db: AsyncSession = Depends(get_db)):
-    """Список всех pending-вопросов."""
-    result = await db.execute(
-        select(HotelierQuestion, Hotel.name)
-        .join(Hotel)
-        .where(HotelierQuestion.status == "pending")
+async def inbox(
+    status: str = Query(
+        default="all",
+        pattern="^(pending|answered|all)$",
+        description="pending — очередь вопросов, answered — история ответов, all — оба",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Вопросы отельеру вместе с ответами и записанным значением.
+
+    Раньше отдавались только pending: после ответа вопрос исчезал из выдачи,
+    поэтому кабинет не мог показать, что отельер ответил и какое значение из
+    ответа записалось. История ответов — доказательство того, что ответ стал
+    самостоятельным источником характеристики, а не строчкой в переписке.
+    """
+    query = select(HotelierQuestion, Hotel.name).join(Hotel)
+    if status != "all":
+        query = query.where(HotelierQuestion.status == status)
+    rows = (await db.execute(query.order_by(HotelierQuestion.asked_at.desc()))).all()
+
+    stored = await _hotelier_values(db, rows)
+
+    result = []
+    for question, hotel_name in rows:
+        feature = stored.get((question.hotel_id, question.feature_key))
+        spec = get_feature(question.feature_key)
+        result.append(
+            {
+                "id": question.id,
+                "hotel_id": question.hotel_id,
+                "hotel_name": hotel_name,
+                "feature_key": question.feature_key,
+                "question": question.question,
+                "status": question.status,
+                "thread_id": question.thread_id,
+                "asked_at": question.asked_at.isoformat() if question.asked_at else None,
+                "answer_raw": question.answer_raw,
+                "answer_parsed": question.answer_parsed,
+                "answered_at": question.answered_at.isoformat() if question.answered_at else None,
+                # Фактическое значение, по которому идёт поиск: то же, что
+                # видит гость в карточке отеля (source=hotelier).
+                "value": (
+                    spec.extract(feature.value) if feature is not None and spec
+                    else feature.value if feature is not None else None
+                ),
+                "confidence": round(float(feature.confidence or 0), 3) if feature is not None else None,
+                "computed_at": (
+                    feature.computed_at.isoformat()
+                    if feature is not None and feature.computed_at
+                    else None
+                ),
+            }
+        )
+    return result
+
+
+async def _hotelier_values(db: AsyncSession, rows) -> dict[tuple[int, str], HotelFeature]:
+    """Значения характеристик от отельера по парам (отель, характеристика)."""
+    pairs = {(question.hotel_id, question.feature_key) for question, _ in rows}
+    if not pairs:
+        return {}
+    features = (
+        (
+            await db.execute(
+                select(HotelFeature).where(
+                    HotelFeature.hotel_id.in_({hotel_id for hotel_id, _ in pairs}),
+                    HotelFeature.source == "hotelier",
+                )
+            )
+        )
+        .scalars()
+        .all()
     )
-    return [
-        {
-            "id": q.id,
-            "hotel_id": q.hotel_id,
-            "hotel_name": name,
-            "feature_key": q.feature_key,
-            "question": q.question,
-            "status": q.status,
-            "thread_id": q.thread_id, # Возвращаем thread_id фронтенду
-            "asked_at": q.asked_at.isoformat() if q.asked_at else None,
-        }
-        for q, name in result.all()
-    ]
+    return {
+        (feature.hotel_id, feature.feature_key): feature
+        for feature in features
+        if (feature.hotel_id, feature.feature_key) in pairs
+    }
 
 @router.post("/hotelier/{hotel_id}/answer/{question_id}")
 async def answer(
@@ -108,6 +167,13 @@ async def answer(
             confidence=float(parsed.get("confidence", 0.95)),
             evidence={"raw_answer": req.answer},
             ttl_days=spec.ttl_days if spec else 180,
+        )
+        # Разбор свободного ответа храним в самом вопросе: кабинет показывает,
+        # что именно система поняла, не отправляя текст в модель повторно.
+        await db.execute(
+            update(HotelierQuestion)
+            .where(HotelierQuestion.id == question_id)
+            .values(answer_parsed={"value": value, "parsed": parsed})
         )
         await db.commit()
         saved_value = value

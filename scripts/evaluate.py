@@ -527,14 +527,20 @@ def main() -> int:
 
     # ------------------------------------------------- точность на разметке
     truth_path = Path(GROUND_TRUTH)
-    manual: dict[str, int] = {}
+    manual: dict[str, float] = {}
     manual_rows: list[list[str]] = []
+    # Имена из разметки, которых не нашлось в БД. Сопоставление идёт по точному
+    # совпадению, поэтому опечатка или переименованный отель молча выпадал из
+    # выборки: метрика уменьшалась, и никто об этом не узнавал.
+    unmatched_truth: list[str] = []
 
     if truth_path.exists():
         by_name = {hotel["name"]: hotel for hotel in hotels}
         truth_rows = list(csv.DictReader(truth_path.open(encoding="utf-8")))
 
         sunset_checked = sunset_ok = 0
+        sunset_floor_checked = 0
+        sunset_floor_errors: list[float] = []
         walk_checked = 0
         walk_manual_errors: list[float] = []
         noise_checked = noise_ok = 0
@@ -542,6 +548,9 @@ def main() -> int:
         for row in truth_rows:
             hotel = by_name.get(row.get("hotel_name", ""))
             if hotel is None:
+                name = (row.get("hotel_name") or "").strip()
+                if name:
+                    unmatched_truth.append(name)
                 continue
 
             features = {feature["key"]: feature for feature in hotel["features"]}
@@ -553,6 +562,20 @@ def main() -> int:
                 sunset_checked += 1
                 if actual == (expected_sunset == "1"):
                     sunset_ok += 1
+
+            # Этаж, с которого открывается закат, сравниваем только когда он
+            # известен с обеих сторон: если инструмент говорит «не виден»,
+            # ошибка уже учтена в sunset_accuracy, и второй раз её не считаем.
+            expected_floor = row.get("sunset_from_floor", "").strip()
+            if expected_floor:
+                try:
+                    expected_floor_value = float(expected_floor.replace(",", "."))
+                except ValueError:
+                    expected_floor_value = None
+                actual_floor = (features.get("sunset_view") or {}).get("value", {}).get("from_floor")
+                if expected_floor_value is not None and actual_floor is not None:
+                    sunset_floor_checked += 1
+                    sunset_floor_errors.append(abs(float(actual_floor) - expected_floor_value))
 
             expected_noise = row.get("noise_level", "").strip().lower()
             if expected_noise in NOISE_LEVELS:
@@ -575,6 +598,16 @@ def main() -> int:
             manual_rows.append(
                 ["закат виден", f"{sunset_ok}/{sunset_checked}", f"{sunset_ok / sunset_checked:.0%}"]
             )
+        if sunset_floor_checked:
+            floor_mae = mean(sunset_floor_errors)
+            manual["sunset_floor_mae"] = round(floor_mae, 1)
+            manual_rows.append(
+                [
+                    "этаж видимости заката",
+                    f"MAE {floor_mae:.1f} эт. (n={sunset_floor_checked})",
+                    "",
+                ]
+            )
         if noise_checked:
             manual["noise_accuracy"] = round(noise_ok / noise_checked, 3)
             manual_rows.append(
@@ -590,9 +623,18 @@ def main() -> int:
         print(format_table(["характеристика", "результат", "доля"], manual_rows))
     else:
         print(f"разметка не заполнена ({GROUND_TRUTH}).")
-        print("Заполните колонки sunset_visible (0/1), noise_level (low/medium/high)")
-        print("и walk_minutes_ref — метрики появятся здесь. Пустые поля не считаются,")
-        print("чтобы не подменять разметку нашими же значениями.")
+        print("Заполните колонки sunset_visible (0/1), sunset_from_floor (этаж),")
+        print("noise_level (low/medium/high) и walk_minutes_ref — метрики появятся здесь.")
+        print("Пустые поля не считаются, чтобы не подменять разметку нашими же значениями.")
+
+    if unmatched_truth:
+        print(
+            f"\nВНИМАНИЕ: строк разметки не сопоставлено с БД — {len(unmatched_truth)}, "
+            "в метрики они не попали:"
+        )
+        for name in unmatched_truth:
+            print(f"  «{name}»")
+        print("Сопоставление идёт по точному совпадению имён — проверьте написание.")
 
     report = {
         "hotels": total_hotels,
@@ -615,6 +657,7 @@ def main() -> int:
         "sunset_vs_terrain_baseline": sunset_summary,
         "noise_vs_density_baseline": noise_summary,
         "manual_metrics": manual,
+        "manual_unmatched_hotels": unmatched_truth,
     }
 
     try:

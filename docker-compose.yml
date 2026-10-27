@@ -49,6 +49,9 @@ services:
       USE_MOCK_LLM: ${USE_MOCK_LLM:-1}
       DEM_PATH: ${DEM_PATH:-/data/dem.tif}
       BUILDINGS_PATH: ${BUILDINGS_PATH:-/data/buildings.gpkg}
+      NOISE_PATH: ${NOISE_PATH:-/data/noise_sources.geojson}
+      BEACHES_PATH: ${BEACHES_PATH:-/data/beaches.geojson}
+      HOTELS_PATH: ${HOTELS_PATH:-/data/hotels.geojson}
     volumes:
       - ./data:/data:ro
       - ./backend:/app
@@ -95,6 +98,14 @@ services:
       USE_MOCK_LLM: "1"
       DEM_PATH: /data/dem.tif
       BUILDINGS_PATH: /data/buildings.gpkg
+      NOISE_PATH: /data/noise_sources.geojson
+      BEACHES_PATH: /data/beaches.geojson
+      HOTELS_PATH: /data/hotels.geojson
+      GROUND_TRUTH: /data/ground_truth.csv
+      EVAL_REPORT: /data/eval_report.json
+      # Внутри сети compose адрес фиксирован: localhost здесь — это сам
+      # контейнер, а не опубликованный порт UI.
+      ROUTELY_API: http://backend:8000
     volumes:
       - ./data:/data
       - ./scripts:/scripts:ro
@@ -110,6 +121,9 @@ services:
       USE_MOCK_LLM: "1"
       DEM_PATH: /data/dem.tif
       BUILDINGS_PATH: /data/buildings.gpkg
+      NOISE_PATH: /data/noise_sources.geojson
+      BEACHES_PATH: /data/beaches.geojson
+      HOTELS_PATH: /data/hotels.geojson
     volumes:
       - ./data:/data:ro
 
