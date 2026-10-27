@@ -5,6 +5,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 // карта не рендерится ("Worker failed to load")
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker?url";
 import type { Hotel } from "../data/mockHotels";
+import { isSunsetVisible } from "../lib/features";
 
 maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
@@ -68,117 +69,135 @@ export const Map: React.FC<MapProps> = ({
     if (!map.current) return;
     const m = map.current;
 
-    // Wait for map to load before adding sources/layers
+    const hotelFeatures: any[] = hotels.map((h) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [h.lon, h.lat] },
+      properties: {
+        id: h.id,
+        name: h.name,
+        icon: h.image,
+        selected: h.id === selectedHotelId,
+      },
+    }));
+
+    const rayFeatures: any[] = showSunsetRays
+      ? hotels
+          .filter((h) => h.sunset_ray)
+          .map((h) => {
+            const ray = h.sunset_ray!;
+            // Азимут отсчитывается от севера по часовой стрелке, поэтому
+            // северная составляющая идёт через cos, восточная — через sin.
+            const azRad = (ray.azimuth * Math.PI) / 180;
+            const dist = ray.length_km * 1000;
+            const dLat = (dist * Math.cos(azRad)) / 111000;
+            const dLon =
+              (dist * Math.sin(azRad)) /
+              (111000 * Math.cos((h.lat * Math.PI) / 180));
+            return {
+              type: "Feature" as const,
+              geometry: {
+                type: "LineString" as const,
+                coordinates: [
+                  [h.lon, h.lat],
+                  [h.lon + dLon, h.lat + dLat],
+                ],
+              },
+              properties: {
+                hotel_id: h.id,
+                visible: isSunsetVisible(h),
+              },
+            };
+          })
+      : [];
+
     const addLayers = () => {
-      // Hotel points
-      if (!m.getSource("hotels")) {
-        m.addSource("hotels", {
+      m.addSource("hotels", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: hotelFeatures },
+      });
+
+      m.addLayer({
+        id: "hotels-circle",
+        type: "circle",
+        source: "hotels",
+        paint: {
+          "circle-radius": ["case", ["boolean", ["get", "selected"]], 13, 8],
+          "circle-color": [
+            "case",
+            ["boolean", ["get", "selected"]],
+            "#f97316",
+            "#0ea5e9",
+          ],
+          "circle-stroke-width": 2,
+          "circle-stroke-color": "#ffffff",
+        },
+      });
+
+      if (showSunsetRays) {
+        m.addSource("sunset-rays", {
           type: "geojson",
-          data: {
-            type: "FeatureCollection",
-            features: hotels.map((h) => ({
-              type: "Feature",
-              geometry: { type: "Point", coordinates: [h.lon, h.lat] },
-              properties: { id: h.id, name: h.name, icon: h.image },
-            })),
-          },
+          data: { type: "FeatureCollection", features: rayFeatures },
         });
 
         m.addLayer({
-          id: "hotels-circle",
-          type: "circle",
-          source: "hotels",
+          id: "sunset-rays-line",
+          type: "line",
+          source: "sunset-rays",
           paint: {
-            "circle-radius": [
-              "case",
-              ["boolean", ["==", ["get", "id"], selectedHotelId ?? -1]],
-              12,
-              8,
-            ],
-            "circle-color": [
-              "case",
-              ["boolean", ["==", ["get", "id"], selectedHotelId ?? -1]],
-              "#f97316",
-              "#0ea5e9",
-            ],
-            "circle-stroke-width": 2,
-            "circle-stroke-color": "#ffffff",
+            "line-color": ["case", ["get", "visible"], "#f97316", "#94a3b8"],
+            "line-width": 2.5,
+            "line-dasharray": [3, 2],
+            "line-opacity": 0.8,
           },
         });
+      }
 
-        // Sunset rays
-        if (showSunsetRays) {
-          const rayFeatures: any[] = hotels
-            .filter((h) => h.sunset_ray)
-            .map((h) => {
-              const azRad = ((h.sunset_ray!.azimuth - 90) * Math.PI) / 180;
-              const lat = h.lat;
-              const lon = h.lon;
-              const dist = h.sunset_ray!.length_km * 1000;
-              const dLat = (dist * Math.cos(azRad)) / 111000;
-              const dLon =
-                (dist * Math.sin(azRad)) /
-                (111000 * Math.cos((lat * Math.PI) / 180));
-              return {
-                type: "Feature" as const,
-                geometry: {
-                  type: "LineString" as const,
-                  coordinates: [
-                    [lon, lat],
-                    [lon + dLon, lat + dLat],
-                  ],
-                },
-                properties: {
-                  hotel_id: h.id,
-                  visible:
-                    h.features
-                      .find((f) => f.key === "sunset_view")
-                      ?.value.includes("Виден") ?? false,
-                },
-              };
-            });
-
-          m.addSource("sunset-rays", {
-            type: "geojson",
-            data: { type: "FeatureCollection", features: rayFeatures },
-          });
-
-          m.addLayer({
-            id: "sunset-rays-line",
-            type: "line",
-            source: "sunset-rays",
-            paint: {
-              "line-color": ["case", ["get", "visible"], "#f97316", "#94a3b8"],
-              "line-width": 2.5,
-              "line-dasharray": [3, 2],
-              "line-opacity": 0.8,
-            },
-          });
-        }
-
-        // Click handler
-        m.on("click", "hotels-circle", (e: any) => {
-          if (e.features && e.features.length > 0) {
-            const hotelId = e.features[0].properties?.id;
-            if (hotelId && onHotelClick) {
-              onHotelClick(hotelId);
-            }
+      m.on("click", "hotels-circle", (e: any) => {
+        if (e.features && e.features.length > 0) {
+          const hotelId = e.features[0].properties?.id;
+          if (hotelId && onHotelClick) {
+            onHotelClick(hotelId);
           }
-        });
+        }
+      });
 
-        m.on("mouseenter", "hotels-circle", () => {
-          m.getCanvas().style.cursor = "pointer";
-        });
-        m.on("mouseleave", "hotels-circle", () => {
-          m.getCanvas().style.cursor = "";
-        });
+      m.on("mouseenter", "hotels-circle", () => {
+        m.getCanvas().style.cursor = "pointer";
+      });
+      m.on("mouseleave", "hotels-circle", () => {
+        m.getCanvas().style.cursor = "";
+      });
+    };
+
+    // Новый поиск меняет набор отелей: слои не пересоздаём, а обновляем
+    // данные источника, иначе на карте остаются точки прошлого запроса.
+    const updateData = () => {
+      const hotelSource = m.getSource("hotels") as
+        | maplibregl.GeoJSONSource
+        | undefined;
+      hotelSource?.setData({ type: "FeatureCollection", features: hotelFeatures });
+
+      const raySource = m.getSource("sunset-rays") as
+        | maplibregl.GeoJSONSource
+        | undefined;
+      raySource?.setData({ type: "FeatureCollection", features: rayFeatures });
+    };
+
+    const onLoad = () => {
+      if (!m.getSource("hotels")) {
+        addLayers();
+      } else {
+        updateData();
       }
     };
 
     if (m.isStyleLoaded()) {
-      addLayers();
+      onLoad();
     } else {
-      m.on("load", addLayers);
+      m.on("load", onLoad);
+      return () => {
+        m.off("load", onLoad);
+      };
     }
   }, [hotels, selectedHotelId, showSunsetRays, onHotelClick]);
 

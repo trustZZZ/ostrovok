@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { ConfidenceBar } from '../components/ConfidenceBar';
 import { ArrowLeft, Trophy } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { isSunsetVisible } from '../lib/features';
 
 export const Compare: React.FC = () => {
   const { hotels, selectedHotelIds, toggleCompare } = useStore();
@@ -44,7 +45,7 @@ export const Compare: React.FC = () => {
       if (!f) return null;
       
       // Different scoring logic per feature
-      if (key === 'sunset_view') return f.value.includes('Виден') ? 100 : 0;
+      if (key === 'sunset_view') return isSunsetVisible(h) ? 100 : 0;
       if (key === 'noise_score') {
         const match = f.value.match(/(\d+)/);
         return match ? 100 - parseInt(match[1]) : 50; // lower noise = better
@@ -211,7 +212,7 @@ export const Compare: React.FC = () => {
           <div className="mt-3 bg-ocean-50 rounded-lg p-4">
             <p className="text-sm text-ocean-800">
               <strong>{selectedHotels[0]?.name}</strong> — 
-              {selectedHotels[0]?.features.find(f => f.key === 'sunset_view')?.value.includes('Виден')
+              {selectedHotels[0] && isSunsetVisible(selectedHotels[0])
                 ? ' прямой вид на закат над Балтикой'
                 : ' нет вида на закат, но компенсируется другими характеристиками'}
               , шум {selectedHotels[0]?.features.find(f => f.key === 'noise_score')?.value || 'N/A'},

@@ -1,6 +1,12 @@
 import { create } from 'zustand';
-import { hotels, routes, type Hotel, type Route } from './data/mockHotels';
-import { isApiAvailable, listHotels, searchHotels } from './api/client';
+import { hotels, routes, type Hotel, type HotelierQuestion, type Route } from './data/mockHotels';
+import {
+  answerQuestion as sendAnswer,
+  getHotelierInbox,
+  isApiAvailable,
+  listHotels,
+  searchHotels,
+} from './api/client';
 
 type DataSource = 'unknown' | 'api' | 'demo';
 
@@ -28,6 +34,29 @@ interface AppState {
 }
 
 /**
+ * Вопросы отельеру приходят отдельной ручкой `/api/hotelier/inbox`,
+ * поэтому их нужно разложить по отелям: карточка и кабинет читают
+ * `hotel.questions`, а не плоский список.
+ */
+function attachQuestions(list: Hotel[], inbox: any[]): Hotel[] {
+  if (inbox.length === 0) return list;
+
+  return list.map(hotel => {
+    const questions: HotelierQuestion[] = inbox
+      .filter(item => item.hotel_id === hotel.id)
+      .map(item => ({
+        id: item.id,
+        feature_key: item.feature_key,
+        question: item.question,
+        status: (item.status ?? 'pending') as HotelierQuestion['status'],
+        asked_at: item.asked_at ?? '',
+      }));
+
+    return questions.length > 0 ? { ...hotel, questions } : hotel;
+  });
+}
+
+/**
  * Локальный скоринг по демо-набору.
  * Используется только когда бэкенд недоступен: интерфейс остаётся
  * работоспособным, но результат помечается как демонстрационный.
@@ -41,7 +70,8 @@ function scoreDemoHotels(query: string): Hotel[] {
     for (const feature of hotel.features) {
       const text = `${feature.label} ${feature.value} ${feature.detail}`.toLowerCase();
 
-      if (q.includes('закат') && feature.key === 'sunset_view' && feature.value.includes('Виден')) score += 30;
+      // «Не виден» тоже содержит «Виден», поэтому сравниваем начало строки.
+      if (q.includes('закат') && feature.key === 'sunset_view' && feature.value.trim().toLowerCase().startsWith('виден')) score += 30;
       if (q.includes('тих') && feature.key === 'noise_score' && parseInt(feature.value) < 30) score += 25;
       if ((q.includes('море') || q.includes('пляж')) && feature.key === 'walk_to_sea' && parseInt(feature.value) <= 5) score += 25;
       if (q.includes('истор') && feature.key === 'wikidata_history' && feature.value.includes('Да')) score += 20;
@@ -99,10 +129,15 @@ export const useStore = create<AppState>((set, get) => ({
     }
 
     const loaded = await listHotels(hotels);
-    set({
-      hotels: loaded.length > 0 ? loaded : hotels,
-      dataSource: loaded.length > 0 ? 'api' : 'demo',
-    });
+    if (loaded.length === 0) {
+      set({ dataSource: 'demo' });
+      return;
+    }
+
+    // Вопросы отельеру лежат отдельной ручкой — догружаем их, иначе кабинет
+    // в API-режиме показывал бы только вопросы из демо-набора.
+    const inbox = await getHotelierInbox();
+    set({ hotels: attachQuestions(loaded, inbox), dataSource: 'api' });
   },
 
   performSearch: async (query: string) => {
@@ -149,6 +184,19 @@ export const useStore = create<AppState>((set, get) => ({
         };
       }),
     }));
+
+    // Ответ уходит на бэкенд: там он разбирается и сохраняется отдельным
+    // источником «hotelier». Без этого шаг демо «ответ отельера» оставался
+    // только в интерфейсе.
+    void sendAnswer(hotelId, questionId, answer).then(delivered => {
+      if (delivered) return;
+      set(state => ({
+        agentLog: [
+          ...state.agentLog,
+          'Ответ отельера не доставлен на бэкенд: изменения видны только в интерфейсе',
+        ],
+      }));
+    });
   },
 
   addAgentLog: (msg: string) => set(state => ({ agentLog: [...state.agentLog, msg] })),

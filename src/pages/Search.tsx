@@ -5,6 +5,7 @@ import { Map } from '../components/Map';
 import { ConfidenceBar } from '../components/ConfidenceBar';
 import { Search, MapPin, Sparkles, ArrowRight, Star, GitCompare } from 'lucide-react';
 import { AgentPipeline } from '../components/AgentPipeline';
+import { findFeature, isSunsetVisible, noiseScore, walkMinutes } from '../lib/features';
 
 export const SearchPage: React.FC = () => {
   const {
@@ -154,9 +155,12 @@ export const SearchPage: React.FC = () => {
             </div>
 
             {displayedHotels.map(hotel => {
-              const sunsetFeature = hotel.features.find(f => f.key === 'sunset_view');
-              const noiseFeature = hotel.features.find(f => f.key === 'noise_score');
-              const walkFeature = hotel.features.find(f => f.key === 'walk_to_sea');
+              const sunsetFeature = findFeature(hotel, 'sunset_view');
+              const noiseFeature = findFeature(hotel, 'noise_score');
+              const walkFeature = findFeature(hotel, 'walk_to_sea');
+              const sunsetVisible = isSunsetVisible(hotel);
+              const noise = noiseScore(hotel);
+              const walk = walkMinutes(hotel);
               const isExpanded = expandedHotel === hotel.id;
               const isInCompare = selectedHotelIds.includes(hotel.id);
 
@@ -196,7 +200,7 @@ export const SearchPage: React.FC = () => {
                         <div className="flex flex-wrap gap-2 mt-3">
                           {sunsetFeature && (
                             <span className={`text-xs px-2 py-1 rounded-full font-medium ${
-                              sunsetFeature.value.includes('Виден') ? 'bg-sunset-100 text-sunset-600' : 'bg-gray-100 text-gray-500'
+                              sunsetVisible ? 'bg-sunset-100 text-sunset-600' : 'bg-gray-100 text-gray-500'
                             }`}>
                               🌅 {sunsetFeature.value}
                             </span>
@@ -257,9 +261,9 @@ export const SearchPage: React.FC = () => {
                               <p className="text-sm text-ocean-700 mt-1">{hotel.explanation}</p>
                             ) : (
                               <ul className="text-sm text-ocean-700 mt-1 space-y-1">
-                                {sunsetFeature?.value.includes('Виден') && <li>✓ Вид на закат над морем</li>}
-                                {noiseFeature && parseInt(noiseFeature.value) < 30 && <li>✓ Тихий район (шум {noiseFeature.value})</li>}
-                                {walkFeature && parseInt(walkFeature.value) <= 5 && <li>✓ {walkFeature.value} до моря пешком</li>}
+                                {sunsetVisible && <li>✓ Вид на закат над морем</li>}
+                                {noise !== null && noise < 30 && <li>✓ Тихий район (шум {noiseFeature?.value})</li>}
+                                {walk !== null && walk <= 5 && <li>✓ {walkFeature?.value} до моря пешком</li>}
                               </ul>
                             )}
                           </div>
