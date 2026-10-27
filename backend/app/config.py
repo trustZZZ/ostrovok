@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "deepseek-chat"
     LLM_API_KEY: str = ""
 
+    # Таймаут одного запроса к LLM, секунды. SDK без него ждёт ответа до 10 минут
+    # и повторяет запрос, поэтому зависший провайдер блокировал POST /answer
+    # на всё это время: ответ отельера не доходил до БД.
+    LLM_TIMEOUT_S: float = 20.0
+
     # Fallback для совместимости с langchain_openai по умолчанию
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "deepseek-chat"

@@ -10,6 +10,11 @@ def get_llm():
         openai_api_key=settings.llm_api_key or "dummy-key",
         openai_api_base=settings.LLM_BASE_URL,
         temperature=0.1, # Низкая температура для стабильного JSON и логики
+        # Явный таймаут обязателен: по умолчанию SDK ждёт ответа до 10 минут
+        # и повторяет запрос. Зависший вызов блокировал POST /answer, и ответ
+        # отельера не попадал в БД (проверено на 12 отелях, см. HANDOFF №19).
+        timeout=settings.LLM_TIMEOUT_S,
+        max_retries=1,
         model_kwargs={"response_format": {"type": "json_object"}}  # Форсируем JSON
     )
 

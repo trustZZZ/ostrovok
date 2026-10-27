@@ -25,7 +25,7 @@ from sqlalchemy import delete, select
 
 from app.collectors import HotelContext, get_tool, run_tool
 from app.db import async_session
-from app.feature_registry import select_features
+from app.feature_registry import get_feature, select_features
 from app.llm_utils import parse_answer_with_llm
 from app.seed import upsert_feature
 
@@ -349,8 +349,15 @@ async def node_parse(state: AgentState) -> dict:
             logger.warning("не удалось разобрать ответ отельера: %s", exc)
             parsed = {"value": str(raw), "confidence": 0.4}
 
+        spec = get_feature(question["feature_key"])
+        value = parsed.get("value", raw)
+        if spec is not None:
+            # Ответ — свободный текст, а реестр сравнивает boolean или число:
+            # без приведения «Люкс и Апартаменты» попадёт в поиск как строка.
+            value = spec.coerce(value, str(raw))
+
         features[question["feature_key"]] = {
-            "value": parsed.get("value", raw),
+            "value": value,
             "source": "hotelier",
             "confidence": float(parsed.get("confidence", 0.5)),
             "evidence": {"raw_answer": str(raw)},
@@ -391,7 +398,7 @@ async def node_finalize(state: AgentState) -> dict:
     return {"saved": saved, "log": list(state.get("log") or []) + [f"Сохранено характеристик: {saved}"]}
 
 
-def build_graph():
+def build_graph(checkpointer=None):
     graph = StateGraph(AgentState)
 
     graph.add_node("plan", node_plan)
@@ -417,9 +424,72 @@ def build_graph():
     graph.add_edge("parse", "finalize")
     graph.add_edge("finalize", END)
 
-    return graph.compile(checkpointer=MemorySaver())
+    return graph.compile(checkpointer=checkpointer or MemorySaver())
 
 
 agent_graph = build_graph()
+
+# Держим контекст соединения открытым: если выйти из него, сохранение
+# состояния молча перестанет работать.
+_checkpointer_cm = None
+
+
+def psycopg_dsn(database_url: str) -> str:
+    """DSN для psycopg: драйвер asyncpg в строке подключения ему незнаком."""
+    for prefix in ("postgresql+asyncpg://", "postgresql+psycopg://", "postgres+asyncpg://"):
+        if database_url.startswith(prefix):
+            return "postgresql://" + database_url[len(prefix):]
+    return database_url
+
+
+async def enable_postgres_checkpointer(database_url: str) -> bool:
+    """Persistent-checkpointer: состояние прогонов переживает рестарт процесса.
+
+    С ``MemorySaver`` незавершённый прогон (отель, ожидающий ответа, или
+    прерванный рестартом сбор) после перезапуска контейнера исчезает: поток
+    не найти по ``thread_id``. Здесь состояние пишется в ту же Postgres, что и
+    данные, поэтому прогон можно продолжить.
+
+    Любая проблема (нет пакета, нет прав, старый сервер) не ломает запуск:
+    возвращается False, граф остаётся на MemorySaver.
+    """
+    global agent_graph, _checkpointer_cm
+
+    try:
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    except Exception as exc:  # noqa: BLE001 - пакет необязательный
+        logger.warning("Postgres-checkpointer недоступен (%s) — остаётся MemorySaver", exc)
+        return False
+
+    cm = AsyncPostgresSaver.from_conn_string(psycopg_dsn(database_url))
+    try:
+        saver = await cm.__aenter__()
+        await saver.setup()
+    except Exception as exc:  # noqa: BLE001 - БД может быть недоступна
+        logger.warning("Postgres-checkpointer не подключён (%s) — остаётся MemorySaver", exc)
+        try:
+            await cm.__aexit__(None, None, None)
+        except Exception:  # noqa: BLE001 - закрытие уже сломанного соединения
+            pass
+        return False
+
+    _checkpointer_cm = cm
+    agent_graph = build_graph(saver)
+    logger.info("Checkpointer: Postgres (состояние прогонов переживает рестарт)")
+    return True
+
+
+async def close_postgres_checkpointer() -> None:
+    """Закрывает соединение checkpointer при остановке приложения."""
+    global _checkpointer_cm
+
+    if _checkpointer_cm is None:
+        return
+    cm, _checkpointer_cm = _checkpointer_cm, None
+    try:
+        await cm.__aexit__(None, None, None)
+    except Exception as exc:  # noqa: BLE001 - остановка не должна падать
+        logger.warning("Не удалось закрыть checkpointer: %s", exc)
+
 
 NODE_NAMES = ("plan", "collect", "conflicts", "ask", "wait", "parse", "finalize")

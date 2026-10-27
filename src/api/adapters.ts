@@ -203,9 +203,13 @@ export function mapFeature(feature: ApiFeature): HotelFeature {
 /**
  * Ответ API → модель UI.
  *
- * Поля, которых нет в собранных данных (цена, звёзды, описание),
- * остаются пустыми: подставлять выдуманные значения нельзя, поэтому
- * UI их просто не показывает.
+ * Цена, звёзды и эмодзи — витринные атрибуты демо-набора, их в собранных
+ * данных нет, и на достоверность характеристик они не влияют.
+ * А вот описание из мок-набора не подставляем: это выдуманный текст, который
+ * утверждает факты и конкурирует с расчётом. У «Принцессы Элизы» описание
+ * гласило «Фасад обращён на запад», хотя `sunset_view` для неё даёт
+ * `facade_facing_away` (азимут фасада 170°) — на карточке получалось прямое
+ * противоречие.
  */
 export function mapHotel(api: ApiHotel, fallback?: Hotel): Hotel {
   const features = (api.features ?? []).map(mapFeature);
@@ -222,7 +226,7 @@ export function mapHotel(api: ApiHotel, fallback?: Hotel): Hotel {
     stars: fallback?.stars ?? 0,
     price_per_night: fallback?.price_per_night ?? 0,
     image: fallback?.image ?? '🏨',
-    description: fallback?.description ?? '',
+    description: '',
     features,
     questions: [],
     sunset_ray: sunset?.value?.visible

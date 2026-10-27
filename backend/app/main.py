@@ -30,7 +30,17 @@ async def lifespan(app: FastAPI):
         if created:
             logger.info("Засидировано отелей: %s", created)
 
+    # Состояние прогонов агента — в Postgres: MemorySaver жил в памяти процесса,
+    # поэтому рестарт контейнера терял незавершённые прогоны вместе с thread_id.
+    # Шаг необязательный: при любой ошибке граф остаётся на MemorySaver.
+    from app.agents.graph import close_postgres_checkpointer, enable_postgres_checkpointer
+    from app.config import settings
+
+    await enable_postgres_checkpointer(settings.DATABASE_URL)
+
     yield
+
+    await close_postgres_checkpointer()
 
 
 app = FastAPI(

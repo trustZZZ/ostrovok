@@ -13,6 +13,12 @@ dependencies = [
     "pydantic-settings",
     "pyyaml",
     "langgraph>=0.2",
+    # Состояние прогонов агента переживает рестарт контейнера: MemorySaver
+    # жил в памяти процесса, и незавершённый прогон терялся вместе с thread_id.
+    "langgraph-checkpoint-postgres>=3.2",
+    # psycopg нужен checkpointer'у; бинарная сборка приносит libpq, которой
+    # нет в slim-образе (иначе «libpq library not found»).
+    "psycopg[binary]>=3.1",
     "langchain-openai",
     "httpx",
     "geopandas",

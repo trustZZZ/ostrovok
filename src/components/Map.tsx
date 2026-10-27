@@ -1,9 +1,10 @@
 import React, { useEffect, useRef } from "react";
 import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-// Vite: подключаем worker MapLibre как URL, иначе в production-сборке
-// карта не рендерится ("Worker failed to load")
-import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker?url";
+// maplibre-gl 6 сам находит воркер только рядом со своим модулем, а в бандле
+// Vite его нет: путь собираем через ?url (явное расширение .mjs, иначе
+// резолв зависит от resolve.extensions).
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 import type { Hotel } from "../data/mockHotels";
 import { isSunsetVisible } from "../lib/features";
 

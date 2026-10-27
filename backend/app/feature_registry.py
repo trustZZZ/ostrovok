@@ -15,6 +15,10 @@ import yaml
 
 REGISTRY_PATH = Path(__file__).with_name("features.yaml")
 
+# Признаки отрицательного ответа отельера: свободный текст надо превратить в
+# boolean, не полагаясь на формулировку модели.
+_NEGATIVE_ANSWER = ("нет", "не ", "отсутств", "нельзя", "не принима", "не пуска")
+
 
 @dataclass(frozen=True)
 class SearchRule:
@@ -76,6 +80,38 @@ class FeatureSpec:
         """Достаёт сопоставимое значение из произвольной структуры value."""
         if isinstance(value, dict):
             return value.get(self.value_field)
+        return value
+
+    def coerce(self, value: Any, raw_answer: str = "") -> Any:
+        """Приводит свободный ответ отельера к типу характеристики.
+
+        Ответ — текст, и языковая модель на вопрос «в каких категориях есть
+        балкон» охотно возвращает перечисление категорий. Реестр сравнивает
+        boolean: без приведения в выдаче появляется «balcony: Люкс и
+        Апартаменты» вместо «да», и поиск по «с балконом» перестаёт находить
+        отель. Нормализация живёт здесь, чтобы её применяли все, кто пишет
+        значение отельера, — и граф, и API.
+        """
+        if self.value_type == "boolean":
+            if isinstance(value, bool):
+                return value
+            text = f"{value} {raw_answer}".strip().lower()
+            head = text[:30].lstrip()
+            if head.startswith(("нет", "не", "отсутств", "нельзя")):
+                return False
+            if head.startswith(("да", "есть", "конечно", "можно", "пуска", "принима")):
+                return True
+            return not any(marker in text for marker in _NEGATIVE_ANSWER)
+
+        if self.value_type == "number":
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return value
+            try:
+                number = float(str(value).replace(",", "."))
+            except (TypeError, ValueError):
+                return value
+            return int(number) if number.is_integer() else number
+
         return value
 
 

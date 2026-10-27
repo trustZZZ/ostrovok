@@ -4,7 +4,7 @@ API роутер агента — реальный SSE стриминг шаго
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 import json
-from app.agents.graph import agent_graph  # Импортируем наш граф
+from app.agents import graph as agent_module  # граф берём из модуля: checkpointer подменяется при старте
 
 router = APIRouter()
 
@@ -19,7 +19,7 @@ async def stream_agent(thread_id: str):
         config = {"configurable": {"thread_id": thread_id}}
 
         # astream_events отдает все события выполнения графа
-        async for event in agent_graph.astream_events({}, config=config, version="v2"):
+        async for event in agent_module.agent_graph.astream_events({}, config=config, version="v2"):
             kind = event["event"]
             node_name = event.get("name", "")
 

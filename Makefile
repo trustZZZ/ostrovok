@@ -1,4 +1,4 @@
-.PHONY: up dev down seed data data-buildings data-hotels test eval clean db fe-dev be-dev
+.PHONY: up dev down seed data data-buildings data-hotels test eval demo clean db fe-dev be-dev
 
 # Поднять весь стек: UI на http://localhost:8080
 up:
@@ -36,6 +36,12 @@ test:
 # Замер качества характеристик. Стек должен быть поднят: docker compose up -d
 eval:
 	docker compose --profile tools run --rm seed python /scripts/evaluate.py
+
+# Демо целиком одной командой: сбор -> ответы отельера -> поиск.
+# Стек должен быть поднят. Данные не выдумываются: ответы отельера — имитация
+# только для субъективных характеристик (питомцы, сторона номеров, балкон).
+demo:
+	docker compose --profile tools run --rm seed python /scripts/demo.py
 
 # Полная очистка, включая том БД
 clean:

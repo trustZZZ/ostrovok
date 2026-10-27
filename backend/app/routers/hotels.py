@@ -176,11 +176,13 @@ async def refresh(
 
 async def _run_agent(hotel_id: int, thread_id: str) -> None:
     """Фоновая задача: прогон графа до записи характеристик в БД."""
-    from app.agents.graph import agent_graph
+    from app.agents import graph as agent_module
 
     config = {"configurable": {"thread_id": thread_id}}
     initial = {"hotel_id": hotel_id, "thread_id": thread_id, "log": [], "features": {}}
     try:
-        await agent_graph.ainvoke(initial, config)
+        # Граф читаем из модуля, а не по имени: при подключении persistent
+        # checkpointer объект пересобирается, и статический импорт устарел бы.
+        await agent_module.agent_graph.ainvoke(initial, config)
     except Exception:  # noqa: BLE001 - фоновая задача не должна ронять процесс
         logger.exception("сбор характеристик для отеля %s упал", hotel_id)

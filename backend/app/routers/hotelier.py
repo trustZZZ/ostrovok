@@ -1,20 +1,24 @@
 """
 API роутер отельера.
 """
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from datetime import datetime
 from app.db import get_db
-from app.models import HotelierQuestion, Hotel
-from app.agents.graph import agent_graph # Импортируем граф
+from app.models import Hotel, HotelFeature, HotelierQuestion
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 class AnswerRequest(BaseModel):
     answer: str
     thread_id: str | None = None # Добавляем thread_id для возобновления
+
 
 @router.get("/hotelier/inbox")
 async def inbox(db: AsyncSession = Depends(get_db)):
@@ -68,20 +72,72 @@ async def answer(
     )
     await db.commit()
 
-    # 3. Размораживаем LangGraph, передавая ответ в узел wait
-    if thread_id:
-        config = {"configurable": {"thread_id": thread_id}}
-        try:
-            # Значение, переданное в ainvoke, interrupt() вернет как ответ в node_wait,
-            # а node_parse ожидает словарь {feature_key: raw_answer}
-            resume_input = {question.feature_key: req.answer}
-            await agent_graph.ainvoke(resume_input, config)
-        except Exception as e:
-            print(f"⚠️ Ошибка при возобновлении графа: {e}")
+    # 3. Сразу записываем значение из ответа. Полагаться только на живое
+    #    состояние графа нельзя: MemorySaver держит его в памяти процесса, и
+    #    после рестарта контейнера ответ на зависший вопрос уже не разморозит
+    #    граф (раздел 12, P3). Ответ отельера — самостоятельный источник,
+    #    поэтому пишем его тем же upsert_feature, что и граф: одна строка на
+    #    (отель, характеристика, источник), провенанс сохраняется.
+    saved_value = None
+    try:
+        from app.feature_registry import get_feature
+        from app.llm_utils import parse_answer_with_llm
+        from app.seed import upsert_feature
+
+        spec = get_feature(question.feature_key)
+        parsed = await parse_answer_with_llm(
+            question=question.question,
+            raw_answer=req.answer,
+            feature_key=question.feature_key,
+        )
+        value = parsed.get("value", req.answer)
+        if spec is not None:
+            # Реестр знает тип характеристики, поэтому и приводит к нему:
+            # свободный ответ «Люкс и Апартаменты» становится true.
+            value = spec.coerce(value, req.answer)
+            if not isinstance(value, dict):
+                # Сравнение идёт по одному полю значения, тому же, что и у
+                # вычисленных характеристик.
+                value = {spec.value_field: value}
+        await upsert_feature(
+            db,
+            hotel_id=question.hotel_id,
+            feature_key=question.feature_key,
+            value=value,
+            source="hotelier",
+            confidence=float(parsed.get("confidence", 0.95)),
+            evidence={"raw_answer": req.answer},
+            ttl_days=spec.ttl_days if spec else 180,
+        )
+        await db.commit()
+        saved_value = value
+    except Exception:  # noqa: BLE001 - ответ уже принят, значение не должно теряться молча
+        await db.rollback()
+        logger.exception(
+            "не удалось сохранить ответ отельера: отель %s, «%s»",
+            question.hotel_id,
+            question.feature_key,
+        )
+
+    # 4. Состояние графа не возобновляем. Проверено фактом: ainvoke по потоку,
+    #    чьё состояние не подхватилось (MemorySaver живёт в памяти процесса и
+    #    теряется при рестарте контейнера), запускает полный прогон заново.
+    #    node_ask при этом удаляет очередь вопросов и создаёт её с новыми id,
+    #    поэтому ответы на остальные вопросы начинают возвращать 404, а
+    #    очередь бесконечно пересобирается. Ответ отельера уже записан выше
+    #    как самостоятельный источник (source=hotelier) — для цикла
+    #    «вопрос → ответ → значение» этого достаточно.
+    logger.info(
+        "ответ отельера сохранён напрямую: отель %s, «%s», поток %s",
+        question.hotel_id,
+        question.feature_key,
+        thread_id,
+    )
 
     return {
         "status": "processed",
-        "message": "Ответ принят, агент продолжил обработку",
+        "message": "Ответ принят, значение записано с источником «отельер»",
+        "value_saved": saved_value is not None,
     }
 
 
