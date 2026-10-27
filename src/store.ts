@@ -74,15 +74,18 @@ function scoreDemoHotels(query: string): Hotel[] {
     for (const feature of hotel.features) {
       const text = `${feature.label} ${feature.value} ${feature.detail}`.toLowerCase();
 
+      // Ветки — только по ключам реестра (`backend/app/features.yaml`).
+      // Условия по `wikidata_history`, `car_access`, `air_quality`, `family`
+      // не срабатывали никогда: таких характеристик нет ни в реестре, ни в
+      // демо-наборе, поэтому подбор молча терял часть пожелания.
       // «Не виден» тоже содержит «Виден», поэтому сравниваем начало строки.
       if (q.includes('закат') && feature.key === 'sunset_view' && feature.value.trim().toLowerCase().startsWith('виден')) score += 30;
       if (q.includes('тих') && feature.key === 'noise_score' && parseInt(feature.value) < 30) score += 25;
       if ((q.includes('море') || q.includes('пляж')) && feature.key === 'walk_to_sea' && parseInt(feature.value) <= 5) score += 25;
-      if (q.includes('истор') && feature.key === 'wikidata_history' && feature.value.includes('Да')) score += 20;
-      if ((q.includes('семь') || q.includes('дет')) && feature.key === 'family' && feature.value.includes('Да')) score += 20;
-      if ((q.includes('питом') || q.includes('кот') || q.includes('собак')) && feature.key === 'family' && feature.value.toLowerCase().includes('pet')) score += 25;
-      if ((q.includes('парков') || q.includes('машин')) && feature.key === 'car_access') score += 15;
-      if (q.includes('воздух') && feature.key === 'air_quality') score += 15;
+      if ((q.includes('питом') || q.includes('кот') || q.includes('собак') || q.includes('животн')) && feature.key === 'pet_friendly' && feature.value.trim().toLowerCase().startsWith('да')) score += 25;
+      if ((q.includes('запад') || q.includes('окн')) && feature.key === 'room_west_windows' && feature.value.trim().toLowerCase().startsWith('да')) score += 20;
+      if ((q.includes('балкон') || q.includes('терас')) && feature.key === 'room_balcony' && feature.value.trim().toLowerCase().startsWith('да')) score += 20;
+      if (q.includes('тих') && feature.key === 'room_silence' && feature.value.trim().toLowerCase().startsWith('да')) score += 15;
       if (text.includes(q) && q.length > 2) score += 5;
     }
 

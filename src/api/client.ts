@@ -39,16 +39,33 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 20000)
   }
 }
 
-/** Проверка доступности бэкенда (кэшируется на время сессии). */
+/**
+ * Проверка доступности бэкенда.
+ *
+ * Успех кэшируется, отказ — нет: на холодном старте бэкенд может ещё
+ * подниматься, а закэшированный на всю сессию отказ оставлял интерфейс
+ * на выдуманном демо-наборе. Поэтому одна повторная попытка с паузой.
+ */
 export async function isApiAvailable(): Promise<boolean> {
-  if (apiAvailable !== null) return apiAvailable;
-  try {
-    const res = await fetchWithTimeout(HEALTH_URL, {}, 2500);
-    apiAvailable = res.ok;
-  } catch {
-    apiAvailable = false;
+  if (apiAvailable === true) return true;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const res = await fetchWithTimeout(HEALTH_URL, {}, 2500);
+      if (res.ok) {
+        apiAvailable = true;
+        return true;
+      }
+    } catch {
+      // Сеть могла отвалиться на время старта — пробуем ещё раз ниже.
+    }
+    if (attempt === 0) {
+      await new Promise(resolve => setTimeout(resolve, 400));
+    }
   }
-  return apiAvailable;
+
+  apiAvailable = false;
+  return false;
 }
 
 export function isOfflineMode(): boolean {

@@ -50,6 +50,9 @@ export const SearchPage: React.FC = () => {
   };
 
   const displayedHotels = searchResults.length > 0 ? searchResults : hotels;
+  // Пока источник данных не определён, демо-набор не показываем: на холодном
+  // старте выдуманные отели успевали мелькнуть в списке до ответа API.
+  const visibleHotels = dataSource === 'unknown' ? [] : displayedHotels;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -122,7 +125,7 @@ export const SearchPage: React.FC = () => {
           {/* Map */}
           <div className="h-[500px] lg:h-[calc(100vh-220px)] lg:sticky lg:top-24 rounded-xl overflow-hidden border border-gray-200 shadow-sm">
             <Map
-              hotels={displayedHotels}
+              hotels={visibleHotels}
               showSunsetRays={true}
               selectedHotelId={expandedHotel}
               onHotelClick={(id) => navigate(`/hotel/${id}`)}
@@ -136,25 +139,29 @@ export const SearchPage: React.FC = () => {
                 {searchQuery ? `Результаты: «${searchQuery}»` : 'Все отели'}
               </h2>
               <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-500">{displayedHotels.length} отелей</span>
+                <span className="text-sm text-gray-500">{visibleHotels.length} отелей</span>
                 <span
                   className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${
                     dataSource === 'api'
                       ? 'bg-emerald-50 text-emerald-700'
-                      : 'bg-amber-50 text-amber-700'
+                      : dataSource === 'unknown'
+                        ? 'bg-gray-100 text-gray-600'
+                        : 'bg-amber-50 text-amber-700'
                   }`}
                   title={
                     dataSource === 'api'
                       ? 'Характеристики собраны системой и лежат в БД'
-                      : 'Бэкенд недоступен: показан демонстрационный набор'
+                      : dataSource === 'unknown'
+                        ? 'Загружаем отели из БД'
+                        : 'Бэкенд недоступен: показан демонстрационный набор'
                   }
                 >
-                  {dataSource === 'api' ? 'данные из БД' : 'демо-набор'}
+                  {dataSource === 'api' ? 'данные из БД' : dataSource === 'unknown' ? 'загружаем…' : 'демо-набор'}
                 </span>
               </div>
             </div>
 
-            {displayedHotels.map(hotel => {
+            {visibleHotels.map(hotel => {
               const sunsetFeature = findFeature(hotel, 'sunset_view');
               const noiseFeature = findFeature(hotel, 'noise_score');
               const walkFeature = findFeature(hotel, 'walk_to_sea');
