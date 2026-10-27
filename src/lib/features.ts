@@ -35,3 +35,63 @@ export function walkMinutes(hotel: Hotel): number | null {
   const match = walk.value.match(/(\d+)\s*мин/);
   return match ? Number(match[1]) : null;
 }
+
+/** Правило характеристики из реестра (`GET /api/features`). */
+export interface FeatureSpec {
+  key: string;
+  title: string;
+  value_type?: string;
+  /** Поле структурированного значения, по которому идёт сравнение. */
+  value_field?: string;
+  search?: { op?: string; hint?: string };
+}
+
+export type BetterDirection = 'higher' | 'lower';
+
+/**
+ * Направление сравнения. `search.op` описывает пожелание пользователя, но
+ * именно оно задаёт порядок: «<=» — меньше лучше (шум, минуты), «>=» —
+ * больше лучше, «==» — наличие лучше отсутствия.
+ */
+export function betterDirection(feature: HotelFeature, spec?: FeatureSpec): BetterDirection {
+  const op = spec?.search?.op;
+  if (op === '<=') return 'lower';
+  if (op === '>=' || op === '==') return 'higher';
+  // Реестр недоступен (демо-набор) — опираемся на смысл характеристики.
+  return feature.key === 'noise_score' || feature.key === 'walk_to_sea' ? 'lower' : 'higher';
+}
+
+/**
+ * Число для сравнения. Поле берётся из реестра, флаг превращается в 1/0.
+ * null — сравнивать нечего. Произвольные числа из текста не выдёргиваем:
+ * «Да, 1912 год» не должно обгонять характеристику с реальным баллом.
+ */
+export function comparableValue(feature: HotelFeature, spec?: FeatureSpec): number | null {
+  const raw = feature.raw;
+  const field = spec?.value_field;
+
+  if (raw !== null && raw !== undefined && field) {
+    const value = typeof raw === 'object' ? (raw as Record<string, unknown>)[field] : raw;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'boolean') return value ? 1 : 0;
+  }
+
+  switch (feature.key) {
+    case 'sunset_view':
+      return feature.value.trim().toLowerCase().startsWith('виден') ? 1 : 0;
+    case 'noise_score': {
+      const score = feature.value.match(/(\d+)\s*\/\s*100/);
+      return score ? Number(score[1]) : null;
+    }
+    case 'walk_to_sea': {
+      const minutes = feature.value.match(/(\d+)\s*мин/);
+      return minutes ? Number(minutes[1]) : null;
+    }
+    case 'climate_summer': {
+      const degrees = feature.value.match(/(\d+)\s*°C/);
+      return degrees ? Number(degrees[1]) : null;
+    }
+    default:
+      return null;
+  }
+}

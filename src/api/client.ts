@@ -7,6 +7,7 @@
  */
 
 import type { Hotel } from '../data/mockHotels';
+import type { FeatureSpec } from '../lib/features';
 import {
   findFallback,
   mapHotel,
@@ -164,11 +165,12 @@ export async function getRoutes(): Promise<any[]> {
 }
 
 /** Реестр характеристик: какие источники и инструменты система знает. */
-export async function getFeatureRegistry(): Promise<any[]> {
+export async function getFeatureRegistry(): Promise<FeatureSpec[]> {
   if (!(await isApiAvailable())) return [];
   try {
     const res = await fetchWithTimeout(`${API_BASE}/features`);
-    return res.ok ? await res.json() : [];
+    if (!res.ok) return [];
+    return (await res.json()) as FeatureSpec[];
   } catch {
     return [];
   }

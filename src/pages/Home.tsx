@@ -121,9 +121,12 @@ export const Home: React.FC = () => {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {[
               { label: 'Отелей в базе', value: '8', icon: '🏨' },
-              { label: 'Фич на отель', value: '6+', icon: '📊' },
-              { label: 'Источников данных', value: '10', icon: '🛰️' },
-              { label: 'Точность sunset_view', value: '88%', icon: '🎯' },
+              { label: 'Характеристик в реестре', value: '8', icon: '📊' },
+              { label: 'Источников данных', value: '6', icon: '🛰️' },
+              // Accuracy на размеченной выборке ещё не измерена, поэтому
+              // показываем то, что действительно проверено замером:
+              // ни одного ложного «закат виден» при закрытом рельефе.
+              { label: 'Ложных «виден закат»', value: '0', icon: '🎯' },
             ].map((stat, i) => (
               <div key={i} className="text-center">
                 <span className="text-2xl">{stat.icon}</span>

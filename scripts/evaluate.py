@@ -240,6 +240,15 @@ def spearman_rho(xs: list[float], ys: list[float]) -> float | None:
     return round(numerator / denominator, 3) if denominator else None
 
 
+def reason_label(reason: str | None) -> str:
+    """Человеческая причина, по которой инструмент не видит закат."""
+    if reason == "facade_facing_away":
+        return "окна не на запад"
+    if reason == "obstructed":
+        return "загорожено"
+    return ""
+
+
 def format_table(headers: list[str], rows: list[list[str]]) -> str:
     widths = [len(header) for header in headers]
     for row in rows:
@@ -362,8 +371,9 @@ def main() -> int:
             "tool_only": 0,
             "baseline_only": 0,
             # Расхождение, где рельеф открыт, а инструмент вид не видит,
-            # обычно объясняется зданиями на луче — считаем такие отдельно.
+            # объясняется либо застройкой на луче, либо ориентацией окон.
             "explained_by_buildings": 0,
+            "explained_by_facade": 0,
         }
         sunset_rows: list[list[str]] = []
 
@@ -387,6 +397,7 @@ def main() -> int:
             baseline_visible = any(not blocked_by_terrain for blocked_by_terrain in blocked.values())
             evidence = sunset.get("raw_evidence") or {}
             buildings_on_ray = evidence.get("buildings_on_ray") or 0
+            block_reason = evidence.get("block_reason")
 
             if tool_visible and baseline_visible:
                 agreement["both_visible"] += 1
@@ -396,7 +407,11 @@ def main() -> int:
                 agreement["tool_only"] += 1
             else:
                 agreement["baseline_only"] += 1
-                if buildings_on_ray > 0:
+                if block_reason == "facade_facing_away":
+                    # Baseline смотрит только на рельеф и не знает, куда
+                    # выходят окна: расхождение здесь ожидаемо и объяснимо.
+                    agreement["explained_by_facade"] += 1
+                elif buildings_on_ray > 0:
                     agreement["explained_by_buildings"] += 1
 
             sunset_rows.append(
@@ -406,11 +421,19 @@ def main() -> int:
                     "виден" if tool_visible else "нет",
                     "открыт" if baseline_visible else "закрыт",
                     str(buildings_on_ray),
+                    reason_label(block_reason),
                 ]
             )
 
         if sunset_rows:
-            total_compared = sum(agreement.values())
+            # explained_* — подкатегории baseline_only, поэтому в размер
+            # выборки они не входят: иначе 8 отелей превращаются в 13 сравнений.
+            total_compared = (
+                agreement["both_visible"]
+                + agreement["both_hidden"]
+                + agreement["tool_only"]
+                + agreement["baseline_only"]
+            )
             matched = agreement["both_visible"] + agreement["both_hidden"]
             sunset_summary = {
                 "sample": total_compared,
@@ -423,7 +446,7 @@ def main() -> int:
             print("\nЗАКАТ: НАШ РАСЧЁТ ПРОТИВ ПРОВЕРКИ ПО ОДНОМУ РЕЛЬЕФУ")
             print(
                 format_table(
-                    ["отель", "эт.", "наш", "рельеф", "зданий на луче"],
+                    ["отель", "эт.", "наш", "рельеф", "зданий на луче", "причина"],
                     sunset_rows,
                 )
             )
@@ -431,11 +454,13 @@ def main() -> int:
                 f"совпадение: {matched}/{total_compared} ({matched / total_compared:.0%}), "
                 f"расхождения: инструмент видит — {agreement['tool_only']}, "
                 f"инструмент не видит — {agreement['baseline_only']} "
-                f"(из них застройкой объяснено {agreement['explained_by_buildings']})"
+                f"(из них застройкой объяснено {agreement['explained_by_buildings']}, "
+                f"стороной фасада — {agreement['explained_by_facade']})"
             )
             print(
-                "трактовка: baseline учитывает только DEM, поэтому «инструмент не видит» "
-                "при открытом рельефе обычно объясняется застройкой (колонка справа). "
+                "трактовка: baseline учитывает только DEM и не знает, куда выходят окна. "
+                "Поэтому «инструмент не видит» при открытом рельефе объясняется "
+                "застройкой или тем, что главный фасад смотрит в другую сторону. "
                 "Обратный случай — «виден» при закрытом рельефе — повод перепроверить расчёт."
             )
     else:

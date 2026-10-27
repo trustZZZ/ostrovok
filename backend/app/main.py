@@ -74,6 +74,10 @@ async def list_features():
             "title": spec.title,
             "description": spec.description,
             "target": spec.target,
+            # Как читать значение и как его сравнивать: UI строит таблицу
+            # сравнения по этим полям, а не разбирает строки регулярками.
+            "value_type": spec.value_type,
+            "value_field": spec.value_field,
             "tools": list(spec.tools),
             "ttl_days": spec.ttl_days,
             "min_confidence": spec.min_confidence,

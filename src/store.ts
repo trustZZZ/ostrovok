@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import { hotels, routes, type Hotel, type HotelierQuestion, type Route } from './data/mockHotels';
+import type { FeatureSpec } from './lib/features';
 import {
   answerQuestion as sendAnswer,
+  getFeatureRegistry,
   getHotelierInbox,
   isApiAvailable,
   listHotels,
@@ -22,6 +24,8 @@ interface AppState {
   /** Распознанные из запроса ограничения (для подсказки в UI). */
   searchIntent: Record<string, any> | null;
   isSearching: boolean;
+  /** Правила сравнения характеристик из реестра (`/api/features`). */
+  featureRegistry: FeatureSpec[];
 
   // Actions
   toggleCompare: (hotelId: number) => void;
@@ -105,6 +109,7 @@ export const useStore = create<AppState>((set, get) => ({
   dataSource: 'unknown',
   searchIntent: null,
   isSearching: false,
+  featureRegistry: [],
 
   toggleCompare: (hotelId: number) => {
     const current = get().selectedHotelIds;
@@ -134,10 +139,13 @@ export const useStore = create<AppState>((set, get) => ({
       return;
     }
 
-    // Вопросы отельеру лежат отдельной ручкой — догружаем их, иначе кабинет
-    // в API-режиме показывал бы только вопросы из демо-набора.
-    const inbox = await getHotelierInbox();
-    set({ hotels: attachQuestions(loaded, inbox), dataSource: 'api' });
+    // Вопросы отельеру и реестр характеристик лежат отдельными ручками:
+    // без реестра страница сравнения не знает, как трактовать значения.
+    const [inbox, featureRegistry] = await Promise.all([
+      getHotelierInbox(),
+      getFeatureRegistry(),
+    ]);
+    set({ hotels: attachQuestions(loaded, inbox), featureRegistry, dataSource: 'api' });
   },
 
   performSearch: async (query: string) => {

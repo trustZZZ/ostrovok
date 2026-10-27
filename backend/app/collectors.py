@@ -115,6 +115,7 @@ async def tool_sunset_view(ctx: HotelContext) -> ToolResult:
         total_floors=ctx.floors,
         dem_path=settings.DEM_PATH,
         buildings_gdf=load_buildings(),
+        facade_azimuth=ctx.facade_azimuth,
     )
     return ToolResult(
         value={

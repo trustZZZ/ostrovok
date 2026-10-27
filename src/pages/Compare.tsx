@@ -3,11 +3,13 @@ import { useStore } from '../store';
 import { ConfidenceBar } from '../components/ConfidenceBar';
 import { ArrowLeft, Trophy } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { isSunsetVisible } from '../lib/features';
+import { betterDirection, comparableValue } from '../lib/features';
 
 export const Compare: React.FC = () => {
-  const { hotels, selectedHotelIds, toggleCompare } = useStore();
+  const { hotels, selectedHotelIds, toggleCompare, featureRegistry, searchQuery } = useStore();
   const selectedHotels = hotels.filter(h => selectedHotelIds.includes(h.id));
+  // Реестр характеристик: какое поле значения сравнивать и в какую сторону.
+  const specs = new Map(featureRegistry.map(spec => [spec.key, spec]));
 
   if (selectedHotels.length < 2) {
     return (
@@ -39,32 +41,61 @@ export const Compare: React.FC = () => {
     return hotel.features.find(f => f.key === key);
   };
 
-  const getWinner = (key: string): number | null => {
-    const values = selectedHotels.map(h => {
-      const f = getFeatureValue(h, key);
-      if (!f) return null;
-      
-      // Different scoring logic per feature
-      if (key === 'sunset_view') return isSunsetVisible(h) ? 100 : 0;
-      if (key === 'noise_score') {
-        const match = f.value.match(/(\d+)/);
-        return match ? 100 - parseInt(match[1]) : 50; // lower noise = better
-      }
-      if (key === 'walk_to_sea') {
-        const match = f.value.match(/(\d+)/);
-        return match ? 100 - parseInt(match[1]) * 10 : 50; // fewer minutes = better
-      }
-      if (key === 'air_quality') {
-        const match = f.value.match(/AQI\s*(\d+)/);
-        return match ? 100 - parseInt(match[1]) * 2 : 50;
-      }
-      return f.confidence * 100;
-    });
-    
-    const maxVal = Math.max(...values.filter(v => v !== null) as number[]);
-    const winnerIdx = values.indexOf(maxVal);
-    return winnerIdx >= 0 ? selectedHotels[winnerIdx].id : null;
+  const labelOf = (key: string): string => {
+    const feature = selectedHotels.flatMap(h => h.features).find(f => f.key === key);
+    return feature?.label ?? specs.get(key)?.title ?? key;
   };
+
+  /**
+   * Лучшие по характеристике. Значение берётся из структурированного поля по
+   * реестру, направление сравнения — из `search.op`: «<=» значит «меньше
+   * лучше». Одинаковые значения преимуществом не считаются.
+   */
+  const leadersOf = (key: string): number[] => {
+    const spec = specs.get(key);
+    const scored = selectedHotels.flatMap(hotel => {
+      const feature = getFeatureValue(hotel, key);
+      if (!feature) return [];
+      const value = comparableValue(feature, spec);
+      return value === null ? [] : [{ id: hotel.id, value }];
+    });
+
+    if (scored.length === 0) return [];
+
+    const firstFeature = selectedHotels
+      .map(hotel => getFeatureValue(hotel, key))
+      .find(feature => feature !== undefined);
+    const direction = firstFeature ? betterDirection(firstFeature, spec) : 'higher';
+
+    const best =
+      direction === 'lower'
+        ? Math.min(...scored.map(item => item.value))
+        : Math.max(...scored.map(item => item.value));
+
+    // Одинаковое значение у всех — не преимущество, трофей никому.
+    if (scored.every(item => item.value === best)) return [];
+    return scored.filter(item => item.value === best).map(item => item.id);
+  };
+
+  const leadersByKey = new Map(allFeatureKeys.map(key => [key, leadersOf(key)]));
+
+  const ranking = selectedHotels
+    .map(hotel => {
+      const wins = allFeatureKeys.filter(key => (leadersByKey.get(key) ?? []).includes(hotel.id));
+      const missing = allFeatureKeys.filter(key => !getFeatureValue(hotel, key));
+      const confidence = hotel.features.length
+        ? hotel.features.reduce((sum, f) => sum + f.confidence, 0) / hotel.features.length
+        : 0;
+      return { hotel, wins, missing, confidence };
+    })
+    .sort((a, b) => b.wins.length - a.wins.length || b.confidence - a.confidence);
+
+  const leader = ranking[0];
+  // Характеристики, где лидера обошли: это и есть «в чём не дотягивает».
+  const behind = allFeatureKeys.filter(key => {
+    const leaders = leadersByKey.get(key) ?? [];
+    return leaders.length > 0 && !leaders.includes(leader.hotel.id);
+  });
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -126,7 +157,7 @@ export const Compare: React.FC = () => {
             </thead>
             <tbody>
               {allFeatureKeys.map((key, idx) => {
-                const winnerId = getWinner(key);
+                const leaders = leadersByKey.get(key) ?? [];
                 const sampleFeature = selectedHotels.flatMap(h => h.features).find(f => f.key === key);
                 if (!sampleFeature) return null;
 
@@ -140,7 +171,7 @@ export const Compare: React.FC = () => {
                     </td>
                     {selectedHotels.map(hotel => {
                       const feature = getFeatureValue(hotel, key);
-                      const isWinner = winnerId === hotel.id;
+                      const isWinner = leaders.includes(hotel.id);
                       
                       if (!feature) {
                         return (
@@ -183,7 +214,9 @@ export const Compare: React.FC = () => {
                   </div>
                 </td>
                 {selectedHotels.map(hotel => {
-                  const avgConfidence = hotel.features.reduce((sum, f) => sum + f.confidence, 0) / hotel.features.length;
+                  const avgConfidence = hotel.features.length
+                    ? hotel.features.reduce((sum, f) => sum + f.confidence, 0) / hotel.features.length
+                    : 0;
                   return (
                     <td key={hotel.id} className="px-4 py-3 text-center">
                       <div className="text-lg font-bold text-ocean-700">
@@ -198,27 +231,54 @@ export const Compare: React.FC = () => {
           </table>
         </div>
 
-        {/* Agent explanation */}
+        {/* Agent explanation — собирается из тех же сравнений, что и таблица */}
         <div className="mt-6 bg-white rounded-xl border border-gray-200 p-5">
           <h3 className="font-bold text-gray-900 flex items-center gap-2">
             🤖 Объяснение агента
           </h3>
           <p className="text-sm text-gray-600 mt-2">
-            На основе анализа скрытых характеристик, {selectedHotels.length > 2 
-              ? `из ${selectedHotels.length} отелей` 
-              : 'из двух отелей'
-            } лучше всего соответствует запросу «тихий отдых у моря с видом на закат»:
+            {searchQuery.trim() ? `Запрос: «${searchQuery}». ` : ''}
+            Сравнение {selectedHotels.length} отелей по {allFeatureKeys.length} характеристикам:
           </p>
-          <div className="mt-3 bg-ocean-50 rounded-lg p-4">
-            <p className="text-sm text-ocean-800">
-              <strong>{selectedHotels[0]?.name}</strong> — 
-              {selectedHotels[0] && isSunsetVisible(selectedHotels[0])
-                ? ' прямой вид на закат над Балтикой'
-                : ' нет вида на закат, но компенсируется другими характеристиками'}
-              , шум {selectedHotels[0]?.features.find(f => f.key === 'noise_score')?.value || 'N/A'},
-              {' '}{selectedHotels[0]?.features.find(f => f.key === 'walk_to_sea')?.value || 'N/A'} до моря.
-            </p>
+          <div className="mt-3 bg-ocean-50 rounded-lg p-4 space-y-2">
+            {leader.wins.length > 0 ? (
+              <p className="text-sm text-ocean-800">
+                <strong>{leader.hotel.name}</strong> — лучший по совокупности: первый по{' '}
+                {leader.wins.length} из {allFeatureKeys.length} характеристик (
+                {leader.wins.map(labelOf).join(', ')}), средняя достоверность{' '}
+                {Math.round(leader.confidence * 100)}%.
+              </p>
+            ) : (
+              <p className="text-sm text-ocean-800">
+                Явного преимущества нет ни у одного отеля: значения характеристик совпадают
+                или их слишком мало для сравнения.
+              </p>
+            )}
+
+            {behind.length > 0 || leader.missing.length > 0 ? (
+              <p className="text-sm text-gray-700">
+                <strong>В чём не дотягивает:</strong>{' '}
+                {[
+                  ...behind.map(key => `${labelOf(key)} — уступает другим`),
+                  ...leader.missing.map(key => `${labelOf(key)} — нет данных`),
+                ].join('; ')}
+                .
+              </p>
+            ) : null}
           </div>
+
+          {ranking.some(item => item.hotel.explanation) ? (
+            <div className="mt-3 space-y-2">
+              {ranking.map(item =>
+                item.hotel.explanation ? (
+                  <p key={item.hotel.id} className="text-xs text-gray-600">
+                    <strong className="text-gray-800">{item.hotel.name}:</strong>{' '}
+                    {item.hotel.explanation}
+                  </p>
+                ) : null,
+              )}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

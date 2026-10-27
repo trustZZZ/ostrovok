@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.feature_registry import get_feature
+from app.tools.facade import estimate_facade_azimuth
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,17 @@ def _fix_mojibake(value: str | None) -> str | None:
         return value
 
 
+def _load_roads():
+    """Слой дорог для оценки фасада. Отсутствие файла не ломает сидирование."""
+    try:
+        import geopandas as gpd
+
+        return gpd.read_file(settings.NOISE_PATH)
+    except Exception as exc:  # noqa: BLE001 - файл может отсутствовать
+        logger.warning("слой дорог недоступен, сторона фасада не оценена: %s", exc)
+        return None
+
+
 async def seed_hotels(session: AsyncSession, path: str | None = None) -> int:
     """Создаёт или обновляет отели из hotels.geojson (идемпотентно по osm_id)."""
     from app.models import Hotel
@@ -82,6 +94,9 @@ async def seed_hotels(session: AsyncSession, path: str | None = None) -> int:
     except FileNotFoundError:
         logger.warning("Нет файла отелей %s — таблица останется пустой", source)
         return 0
+
+    # Слой дорог нужен для оценки стороны фасада: читается один раз на файл.
+    roads = _load_roads()
 
     payload: list[dict] = []
     for feature in data.get("features") or []:
@@ -99,6 +114,16 @@ async def seed_hotels(session: AsyncSession, path: str | None = None) -> int:
                 tags = {}
 
         lon, lat = float(coords[0]), float(coords[1])
+        # Явное значение из файла важнее оценки: его мог уточнить человек.
+        facade = props.get("facade_azimuth")
+        if facade is None:
+            # Оценка фасада — необязательная эвристика: её сбой не должен
+            # мешать запуску приложения и сидированию остальных полей.
+            try:
+                facade, _ = estimate_facade_azimuth(lon, lat, roads)
+            except Exception as exc:  # noqa: BLE001 - геометрия OSM бывает битой
+                logger.warning("фасад не оценён для (%.5f, %.5f): %s", lat, lon, exc)
+                facade = None
         payload.append(
             {
                 "osm_id": int(props["osm_id"]) if props.get("osm_id") else None,
@@ -106,6 +131,7 @@ async def seed_hotels(session: AsyncSession, path: str | None = None) -> int:
                 "address": _address(tags),
                 "geom": WKTElement(f"POINT({lon} {lat})", srid=4326),
                 "floors": _floors(tags, props.get("floors")),
+                "facade_azimuth": float(facade) if facade is not None else None,
             }
         )
 
@@ -131,6 +157,11 @@ async def seed_hotels(session: AsyncSession, path: str | None = None) -> int:
             session.add(Hotel(osm_id=osm_id, **item))
         else:
             for field, value in item.items():
+                # Уже записанную сторону фасада не перетираем: её мог уточнить
+                # человек или ответ отельера, а файл отелей содержит только
+                # автоматическую оценку по ближайшей улице.
+                if field == "facade_azimuth" and row.facade_azimuth is not None:
+                    continue
                 setattr(row, field, value)
         touched += 1
 

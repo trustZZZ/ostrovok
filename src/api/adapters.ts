@@ -63,9 +63,14 @@ function present(key: string): { label: string; icon: string } {
 
 function formatSunset(value: any, evidence: Record<string, any>): string {
   if (!value || value.visible === undefined) return NO_DATA;
-  if (!value.visible) return 'Не виден';
-  const floor = value.from_floor ? ` с ${value.from_floor} этажа` : '';
-  return `Виден${floor}`;
+  if (value.visible) {
+    const floor = value.from_floor ? ` с ${value.from_floor} этажа` : '';
+    return `Виден${floor}`;
+  }
+  // Причина отказа меняет совет гостю: другой номер или этаж повыше.
+  if (evidence.block_reason === 'facade_facing_away') return 'Окна не на запад';
+  if (evidence.block_reason === 'obstructed') return 'Загорожен';
+  return 'Не виден';
 }
 
 function formatNoise(value: any): string {
@@ -93,10 +98,10 @@ function formatFlag(flag: any): string {
   return flag ? 'Да' : 'Нет';
 }
 
-function formatValue(key: string, value: any): string {
+function formatValue(key: string, value: any, evidence: Record<string, any> = {}): string {
   switch (key) {
     case 'sunset_view':
-      return formatSunset(value, {});
+      return formatSunset(value, evidence);
     case 'noise_score':
       return formatNoise(value);
     case 'walk_to_sea':
@@ -184,10 +189,13 @@ export function mapFeature(feature: ApiFeature): HotelFeature {
     key: feature.key,
     label,
     icon,
-    value: formatValue(feature.key, feature.value),
+    value: formatValue(feature.key, feature.value, feature.raw_evidence ?? {}),
     detail: formatDetail(feature),
     confidence: feature.confidence ?? 0,
     source: feature.source,
+    // Исходное значение хранится рядом с готовой строкой: сравнение отелей
+    // читает поля по реестру характеристик, а не текст для человека.
+    raw: feature.value,
     evidence: feature.raw_evidence,
   };
 }

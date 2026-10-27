@@ -1,7 +1,20 @@
+# Общая для всех сервисов платформа: на Apple Silicon без неё postgis и GDAL
+# подтягиваются под arm64 и расходятся с гео-библиотеками backend.
+x-platform: &default-platform linux/amd64
+
+# Конфигурация читается из .env одного корневого файла. `required: false`
+# оставляет запуск без копирования шаблона рабочим: значения ниже всё равно
+# имеют дефолты.
+x-env-file: &default-env-file
+  - path: .env
+    required: false
+
 services:
   db:
     image: postgis/postgis:16-3.4
+    platform: *default-platform
     restart: unless-stopped
+    env_file: *default-env-file
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-routely}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-routely}
@@ -22,7 +35,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    platform: *default-platform
     restart: unless-stopped
+    env_file: *default-env-file
     expose:
       - "8000"
     environment:
@@ -55,6 +70,7 @@ services:
     build:
       context: .
       dockerfile: ./frontend/Dockerfile
+    platform: *default-platform
     restart: unless-stopped
     ports:
       - "${APP_PORT:-8080}:8080"
@@ -74,6 +90,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    platform: *default-platform
     environment:
       USE_MOCK_LLM: "1"
       DEM_PATH: /data/dem.tif
@@ -88,6 +105,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.dev
+    platform: *default-platform
     environment:
       USE_MOCK_LLM: "1"
       DEM_PATH: /data/dem.tif

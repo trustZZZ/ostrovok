@@ -6,6 +6,8 @@ export interface HotelFeature {
   detail: string;
   confidence: number;
   source: string;
+  /** Структурированное значение из API — по нему сравниваются отели. */
+  raw?: unknown;
   evidence?: Record<string, any>;
 }
 
