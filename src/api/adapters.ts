@@ -46,6 +46,8 @@ const PRESENTATION: Record<string, { label: string; icon: string }> = {
   sunset_view: { label: 'Закат', icon: '🌅' },
   noise_score: { label: 'Тишина', icon: '🤫' },
   walk_to_sea: { label: 'Пешком до моря', icon: '🚶' },
+  // Партнёрский слой: место рядом с отелем, подтверждённое обзорами.
+  sunset_spot_nearby: { label: 'Закат рядом', icon: '🌇' },
   climate_summer: { label: 'Климат летом', icon: '☀️' },
   pet_friendly: { label: 'С питомцем', icon: '🐾' },
   // Номерные характеристики: из открытых данных не выводятся,
@@ -93,6 +95,18 @@ function formatClimate(value: any): string {
   return `+${value.mean_july_max_c}°C в июле${warm}`;
 }
 
+function formatSunsetSpot(value: any): string {
+  if (!value || value.score === undefined || value.score === null) return NO_DATA;
+  const minutes = value.nearest_minutes;
+  if (typeof minutes !== 'number') return 'Есть рядом';
+  return `${Math.round(minutes)} мин пешком`;
+}
+
+/** Обрезка цитаты обзора: в карточке нужен смысл, а не весь абзац. */
+function shorten(text: string, limit = 90): string {
+  return text.length <= limit ? text : `${text.slice(0, limit).trimEnd()}…`;
+}
+
 function formatFlag(flag: any): string {
   if (flag === undefined || flag === null) return NO_DATA;
   return flag ? 'Да' : 'Нет';
@@ -108,6 +122,8 @@ function formatValue(key: string, value: any, evidence: Record<string, any> = {}
       return formatWalk(value);
     case 'climate_summer':
       return formatClimate(value);
+    case 'sunset_spot_nearby':
+      return formatSunsetSpot(value);
     case 'pet_friendly':
       return formatFlag(value?.allowed);
     // Номерные характеристики — всегда булев факт от отельера.
@@ -169,6 +185,22 @@ function formatDetail(feature: ApiFeature): string {
         parts.push('Без перехода через магистраль');
       }
       if (evidence.network) parts.push(`сеть: ${evidence.network}`);
+      break;
+    }
+    case 'sunset_spot_nearby': {
+      if (value.place_name) parts.push(`Место: ${value.place_name}`);
+      if (typeof value.reviews === 'number') parts.push(`подтверждений: ${value.reviews}`);
+      if (typeof value.distance_m === 'number') {
+        parts.push(`${Math.round(value.distance_m)} м по маршруту`);
+      }
+      const months = Array.isArray(value.best_months) ? value.best_months : [];
+      if (months.length > 0 && months.length < 12) parts.push(`месяцы: ${months.join(', ')}`);
+      // Атрибуция обязательна: обзор — чужая публикация, а не наш вывод.
+      const reviews = Array.isArray(evidence.reviews) ? evidence.reviews : [];
+      const first = reviews[0];
+      if (first?.author) parts.push(`обзор: ${first.author}`);
+      if (first?.quote) parts.push(`«${shorten(String(first.quote))}»`);
+      if (first?.url) parts.push(String(first.url));
       break;
     }
     case 'climate_summer': {

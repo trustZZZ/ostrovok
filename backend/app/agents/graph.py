@@ -265,7 +265,23 @@ async def node_conflicts(state: AgentState) -> dict:
                 }
             )
 
-        confident = bool(current) and current["confidence"] >= task["min_confidence"]
+        # Факт «в БД уже есть пригодный ответ» — тоже основание не спрашивать.
+        # Раньше confident учитывал только результат инструмента в текущем
+        # прогоне, поэтому характеристики без инструментов (питомцы, сторона
+        # номеров, балкон) запрашивались при каждом сборе, и в кабинете
+        # копились десятки одинаковых вопросов и ответов на них.
+        now = datetime.utcnow()
+        fresh = [
+            row
+            for row in stored.get(key, [])
+            if (row.confidence or 0) >= task["min_confidence"]
+            # Просроченное значение основанием не является: устаревшие данные
+            # должны перепроверяться, иначе актуализация перестанет работать.
+            and (row.expires_at is None or row.expires_at > now)
+        ]
+        confident = (
+            bool(current) and current["confidence"] >= task["min_confidence"]
+        ) or bool(fresh)
         if (not confident or len(variants) > 1) and task["question"]:
             pending.append(task)
 

@@ -116,8 +116,20 @@ class FeatureSpec:
 
 
 def source_kind(source: str | None) -> str:
-    """Классифицирует источник: ответ отельера или вычисленные данные."""
-    return "hotelier" if "hotelier" in (source or "").lower() else "geo"
+    """Классифицирует источник: отельер, партнёрский обзор или расчёт.
+
+    Тип источника — часть правила достоверности: ``resolve_rows`` сравнивает
+    его с ``spec.authoritative``. Источник, которого здесь нет, никогда не
+    станет авторитетным, и подтверждённый десятком обзоров факт молча
+    проиграет вычисленному значению, поэтому новые виды источников
+    добавляются сюда вместе с характеристикой.
+    """
+    text = (source or "").lower()
+    if "hotelier" in text:
+        return "hotelier"
+    if "blogger" in text:
+        return "blogger"
+    return "geo"
 
 
 def is_no_data(value: Any) -> bool:

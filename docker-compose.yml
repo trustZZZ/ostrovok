@@ -101,6 +101,10 @@ services:
       NOISE_PATH: /data/noise_sources.geojson
       BEACHES_PATH: /data/beaches.geojson
       HOTELS_PATH: /data/hotels.geojson
+      GUIDES_PATH: /data/guides
+      GUIDES_API_URL: ${GUIDES_API_URL:-}
+      GUIDES_API_TOKEN: ${GUIDES_API_TOKEN:-}
+      GUIDES_CITY: ${GUIDES_CITY:-}
       GROUND_TRUTH: /data/ground_truth.csv
       EVAL_REPORT: /data/eval_report.json
       # Внутри сети compose адрес фиксирован: localhost здесь — это сам

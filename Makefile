@@ -1,4 +1,4 @@
-.PHONY: up dev down seed data data-buildings data-hotels test eval demo clean db fe-dev be-dev
+.PHONY: up dev down seed data data-buildings data-hotels test eval demo guides guides-fetch clean db fe-dev be-dev
 
 # Поднять весь стек: UI на http://localhost:8080
 up:
@@ -42,6 +42,15 @@ eval:
 # только для субъективных характеристик (питомцы, сторона номеров, балкон).
 demo:
 	docker compose --profile tools run --rm seed python /scripts/demo.py
+
+# Партнёрские обзоры -> характеристики отелей (см. data/guides/CONTRACT.md).
+# Читает снапшот из репозитория: сервис партнёра для запуска не нужен.
+guides:
+	docker compose --profile tools run --rm --build seed python /scripts/ingest_guides.py
+
+# То же, но с обновлением снапшота у партнёра (нужны GUIDES_API_URL/TOKEN).
+guides-fetch:
+	docker compose --profile tools run --rm --build seed python /scripts/ingest_guides.py --fetch
 
 # Полная очистка, включая том БД
 clean:

@@ -144,8 +144,25 @@ def test_zero_confidence_row_is_ignored_when_a_fact_exists():
 
 def test_source_kind_classifies_rows():
     assert source_kind("hotelier:pet_friendly") == "hotelier"
+    assert source_kind("blogger:local-guides") == "blogger"
     assert source_kind("Open-Meteo") == "geo"
     assert source_kind(None) == "geo"
+
+
+def test_blogger_source_wins_where_it_is_authoritative():
+    """Партнёрский обзор — авторитетный источник для «эмоций».
+
+    Если source_kind не знает про blogger, authoritative из реестра никогда
+    не совпадёт с типом источника, и более уверенный расчёт перебьёт место,
+    подтверждённое обзорами. Ошибка была бы невидимой: правило достоверности
+    просто перестало бы работать.
+    """
+    spec = load_registry()["sunset_spot_nearby"]
+    reviewers = make_row("blogger:local-guides", {"score": 0.88}, 0.75, datetime(2024, 1, 1))
+    computed = make_row("geo:sunset_view", {"score": 0.2}, 0.95, datetime(2025, 6, 1))
+
+    assert spec.authoritative == "blogger"
+    assert resolve_rows([computed, reviewers], spec) is reviewers
 
 
 # --- сам реестр -----------------------------------------------------------

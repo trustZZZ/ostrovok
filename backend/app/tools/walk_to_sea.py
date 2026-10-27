@@ -117,6 +117,78 @@ def _elevation_penalty(graph, path, dem_path: str) -> float:
         return 0.0
 
 
+def compute_walk_to_point(
+    origin_lon: float,
+    origin_lat: float,
+    target_lon: float,
+    target_lat: float,
+    *,
+    dem_path: str = "",
+    roads_gdf=None,
+    graph: nx.Graph | None = None,
+    straight_m: float | None = None,
+    source: str = "OSM roads",
+    target_label: str = "места",
+) -> dict:
+    """Время пешком до произвольной точки по дорожной сети OSM.
+
+    Тот же граф, скорость и штраф за рельеф, что и в ``compute_walk_to_sea``:
+    расстояние до партнёрского места должно считаться так же, как до пляжа,
+    иначе в выдаче окажутся две несопоставимые оценки «6 минут».
+
+    ``graph`` позволяет переиспользовать уже построенный граф: пакетный сбор
+    считает десятки маршрутов, и строить граф каждый раз — минуты впустую.
+    """
+    graph = graph if graph is not None else build_walk_graph(roads_gdf)
+    if graph.number_of_nodes() == 0:
+        return _no_data("нет дорожной сети для маршрута", straight_m, source)
+
+    origin, origin_gap = _nearest_node(graph, origin_lat, origin_lon)
+    target, target_gap = _nearest_node(graph, target_lat, target_lon)
+    if origin is None or target is None:
+        return _no_data("не удалось привязать точки к дорожной сети", straight_m, source)
+
+    try:
+        path = nx.shortest_path(graph, origin, target, weight="length")
+        path_m = sum(graph[a][b]["length"] for a, b in zip(path, path[1:]))
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        return _no_data(f"маршрут до {target_label} не найден в графе дорог", straight_m, source)
+
+    path_m += origin_gap + target_gap
+    penalty = _elevation_penalty(graph, path, dem_path)
+    minutes = path_m / WALK_SPEED_M_MIN + penalty
+
+    if minutes > 60:
+        # Больше часа — это разрыв в дорожной сети или объезд, а не прогулка.
+        # Возвращаем «нет данных» вместо правдоподобного числа.
+        return _no_data(
+            f"маршрут до {target_label} длиннее часа ({round(minutes)} мин) — "
+            f"вероятен разрыв дорожной сети",
+            straight_m,
+            source,
+        )
+
+    crosses_highway = any(
+        graph[a][b].get("major") for a, b in zip(path, path[1:])
+    )
+
+    return {
+        "minutes": round(minutes, 1),
+        "distance_m": round(path_m),
+        "crosses_highway": crosses_highway,
+        "confidence": 0.85,
+        "source": source,
+        "evidence": {
+            "method": "shortest_path",
+            "straight_line_m": round(straight_m) if straight_m else None,
+            "detour_ratio": round(path_m / straight_m, 2) if straight_m else None,
+            "path_nodes": len(path),
+            "elevation_penalty_min": round(penalty, 1),
+            "graph_nodes": graph.number_of_nodes(),
+        },
+    }
+
+
 def compute_walk_to_sea(
     hotel_lon: float,
     hotel_lat: float,
@@ -137,55 +209,25 @@ def compute_walk_to_sea(
             straight_m,
         )
 
-    graph = build_walk_graph(roads_gdf)
-    if graph.number_of_nodes() == 0:
-        return _no_data("нет дорожной сети для маршрута", straight_m)
-
-    origin, origin_gap = _nearest_node(graph, hotel_lat, hotel_lon)
-    target, target_gap = _nearest_node(graph, water_point[0], water_point[1])
-    if origin is None or target is None:
-        return _no_data("не удалось привязать точки к дорожной сети", straight_m)
-
-    try:
-        path = nx.shortest_path(graph, origin, target, weight="length")
-        path_m = sum(graph[a][b]["length"] for a, b in zip(path, path[1:]))
-    except (nx.NetworkXNoPath, nx.NodeNotFound):
-        return _no_data("маршрут до воды не найден в графе дорог", straight_m)
-
-    path_m += origin_gap + target_gap
-    penalty = _elevation_penalty(graph, path, dem_path)
-    minutes = path_m / WALK_SPEED_M_MIN + penalty
-
-    if minutes > 60:
-        # Больше часа — это разрыв в дорожной сети или объезд, а не прогулка
-        # до пляжа. Возвращаем «нет данных» вместо правдоподобного числа.
-        return _no_data(
-            f"маршрут до пляжа длиннее часа ({round(minutes)} мин) — вероятен разрыв дорожной сети",
-            straight_m,
-        )
-
-    crosses_highway = any(
-        graph[a][b].get("major") for a, b in zip(path, path[1:])
+    # _water_point возвращает (lat, lon) — порядок аргументов приводим к lon/lat.
+    return compute_walk_to_point(
+        hotel_lon,
+        hotel_lat,
+        water_point[1],
+        water_point[0],
+        dem_path=dem_path,
+        roads_gdf=roads_gdf,
+        straight_m=straight_m,
+        source="OSM roads + bathing water",
+        target_label="пляжа",
     )
 
-    return {
-        "minutes": round(minutes, 1),
-        "distance_m": round(path_m),
-        "crosses_highway": crosses_highway,
-        "confidence": 0.85,
-        "source": "OSM roads + bathing water",
-        "evidence": {
-            "method": "shortest_path",
-            "straight_line_m": round(straight_m) if straight_m else None,
-            "detour_ratio": round(path_m / straight_m, 2) if straight_m else None,
-            "path_nodes": len(path),
-            "elevation_penalty_min": round(penalty, 1),
-            "graph_nodes": graph.number_of_nodes(),
-        },
-    }
 
-
-def _no_data(reason: str, straight_m: float | None = None) -> dict:
+def _no_data(
+    reason: str,
+    straight_m: float | None = None,
+    source: str = "OSM roads + bathing water",
+) -> dict:
     # source совпадает с успешным результатом намеренно: иначе «нет данных»
     # не затрёт устаревшее число от того же расчёта, и в БД останутся
     # две записи — старая неверная и новая пустая.

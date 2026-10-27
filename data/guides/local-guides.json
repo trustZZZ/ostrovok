@@ -1,0 +1,242 @@
+{
+    "schema_version": "1.0",
+    "generated_at": "2026-02-10T09:00:00Z",
+    "partner": {
+        "id": "local-guides",
+        "name": "Local Guides Kaliningrad",
+        "license": "CC BY 4.0",
+        "attribution_required": true,
+        "contact": "team@example.com"
+    },
+    "region": {
+        "name": "Зеленоградск",
+        "region": "Калининградская область",
+        "country": "RU",
+        "bbox": [
+            20.44,
+            54.94,
+            20.52,
+            54.99
+        ]
+    },
+    "guides": [
+        {
+            "id": "lg-000123",
+            "revision": 3,
+            "status": "active",
+            "updated_at": "2026-02-08T12:30:00Z",
+            "published_at": "2026-02-01T08:00:00Z",
+            "language": "ru",
+            "title": "Три вечера в Зеленоградске: где встречать закат",
+            "url": "https://example.com/guides/zelenogradsk-sunset",
+            "author": {
+                "id": "a-17",
+                "name": "Анна К.",
+                "profile_url": "https://example.com/authors/17"
+            },
+            "media": {
+                "kind": "video",
+                "cover_url": "https://example.com/media/cover.jpg",
+                "duration_s": 412
+            },
+            "places": [
+                {
+                    "key": "zelenogradsk-promenade-viewpoint",
+                    "name": "Смотровая на променаде",
+                    "category": "viewpoint",
+                    "coordinates": {
+                        "lat": 54.958407,
+                        "lon": 20.463309
+                    },
+                    "address": "Зеленоградск, променад",
+                    "access": {
+                        "public": true,
+                        "free": true,
+                        "open_24h": true
+                    },
+                    "emotions": [
+                        {
+                            "key": "sunset_spot",
+                            "salience": 0.9,
+                            "time_of_day": [
+                                "evening"
+                            ],
+                            "best_months": [
+                                4,
+                                5,
+                                6,
+                                7,
+                                8,
+                                9
+                            ],
+                            "quote": "Лучший закат — на смотровой у променада: солнце уходит прямо в море.",
+                            "quote_locator": {
+                                "type": "video_timestamp",
+                                "value": "00:02:14"
+                            }
+                        }
+                    ]
+                },
+                {
+                    "key": "zelenogradsk-beach-descent-east",
+                    "name": "Спуск к пляжу у восточной части набережной",
+                    "category": "beach",
+                    "coordinates": {
+                        "lat": 54.964613,
+                        "lon": 20.484092
+                    },
+                    "address": "Зеленоградск, набережная",
+                    "access": {
+                        "public": true,
+                        "free": true,
+                        "open_24h": true
+                    },
+                    "emotions": [
+                        {
+                            "key": "sunset_spot",
+                            "salience": 0.6,
+                            "time_of_day": [
+                                "evening"
+                            ],
+                            "best_months": [
+                                5,
+                                6,
+                                7,
+                                8
+                            ],
+                            "quote": "Отсюда тоже видно закат, но людей меньше — берите плед и приходите к восьми.",
+                            "quote_locator": {
+                                "type": "text_span",
+                                "start": 1840,
+                                "end": 1912
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "lg-000145",
+            "revision": 1,
+            "status": "active",
+            "updated_at": "2026-02-09T18:10:00Z",
+            "published_at": "2026-02-05T19:00:00Z",
+            "language": "ru",
+            "title": "Закаты на куршской стороне",
+            "url": "https://example.com/guides/kurshskaya-sunset",
+            "author": {
+                "id": "a-31",
+                "name": "Дмитрий П.",
+                "profile_url": "https://example.com/authors/31"
+            },
+            "media": {
+                "kind": "photo",
+                "cover_url": "https://example.com/media/cover2.jpg"
+            },
+            "places": [
+                {
+                    "key": "zelenogradsk-promenade-viewpoint",
+                    "name": "Смотровая на променаде",
+                    "category": "viewpoint",
+                    "coordinates": {
+                        "lat": 54.958391,
+                        "lon": 20.463287
+                    },
+                    "address": "Зеленоградск, променад",
+                    "access": {
+                        "public": true,
+                        "free": true,
+                        "open_24h": true
+                    },
+                    "emotions": [
+                        {
+                            "key": "sunset_spot",
+                            "salience": 0.85,
+                            "time_of_day": [
+                                "evening"
+                            ],
+                            "best_months": [
+                                3,
+                                4,
+                                5,
+                                6,
+                                7,
+                                8,
+                                9,
+                                10
+                            ],
+                            "quote": "Приходите за полчаса до заката: у променада лучший обзор, народу мало.",
+                            "quote_locator": {
+                                "type": "text_span",
+                                "start": 620,
+                                "end": 692
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "id": "lg-000160",
+            "revision": 2,
+            "status": "active",
+            "updated_at": "2026-02-09T20:40:00Z",
+            "published_at": "2026-02-07T10:15:00Z",
+            "language": "ru",
+            "title": "Где в Зеленоградске сесть у моря с пледом",
+            "url": "https://example.com/guides/zelenogradsk-evening",
+            "author": {
+                "id": "a-44",
+                "name": "Ирина С.",
+                "profile_url": "https://example.com/authors/44"
+            },
+            "media": {
+                "kind": "photo",
+                "cover_url": "https://example.com/media/cover3.jpg"
+            },
+            "places": [
+                {
+                    "key": "zelenogradsk-beach-descent-east",
+                    "name": "Спуск к пляжу у восточной части набережной",
+                    "category": "beach",
+                    "coordinates": {
+                        "lat": 54.964604,
+                        "lon": 20.484074
+                    },
+                    "address": "Зеленоградск, набережная",
+                    "access": {
+                        "public": true,
+                        "free": true,
+                        "open_24h": true
+                    },
+                    "emotions": [
+                        {
+                            "key": "sunset_spot",
+                            "salience": 0.75,
+                            "time_of_day": [
+                                "evening"
+                            ],
+                            "best_months": [
+                                5,
+                                6,
+                                7,
+                                8,
+                                9
+                            ],
+                            "quote": "Восточный спуск тише: закат видно, а толпы с променада сюда не доходят.",
+                            "quote_locator": {
+                                "type": "text_span",
+                                "start": 380,
+                                "end": 448
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "paging": {
+        "next_cursor": null,
+        "total_guides": 3
+    }
+}

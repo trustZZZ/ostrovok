@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     NOISE_PATH: str = str(_REPO_ROOT / "data" / "noise_sources.geojson")
     BEACHES_PATH: str = str(_REPO_ROOT / "data" / "beaches.geojson")
     HOTELS_PATH: str = str(_REPO_ROOT / "data" / "hotels.geojson")
+    # Каталог снапшотов партнёрских обзоров. Читается только ingest-скриптом:
+    # в рантайме сервис в сеть партнёра не ходит, иначе демо зависело бы
+    # от чужой доступности.
+    GUIDES_PATH: str = str(_REPO_ROOT / "data" / "guides")
 
     @property
     def llm_api_key(self) -> str:

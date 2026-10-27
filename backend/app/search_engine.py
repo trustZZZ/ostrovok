@@ -44,6 +44,11 @@ KEYWORD_INTENT: dict[str, tuple[tuple[str, ...], Any]] = {
     "room_west_windows": (("номер с видом", "западн"), True),
     "room_silence": (("тихий номер", "шумоизоляц", "не слыш"), True),
     "room_balcony": (("балкон", "террас"), True),
+    # Партнёрская характеристика. Иглы намеренно про место, а не про закат
+    # вообще: «хочу закат» — это про окно, а «встретить закат на берегу» —
+    # про точку рядом с отелем. Иначе эмоция подмешивалась бы в каждый
+    # запрос со словом «закат» и меняла выдачу там, где её не просили.
+    "sunset_spot_nearby": (("закат на берег", "закат у мор", "смотров", "закатн"), 0.5),
 }
 
 
@@ -133,6 +138,15 @@ def _describe(spec: FeatureSpec, row: Any) -> str:
         return text
     if spec.key == "climate_summer":
         return f"в июле в среднем +{value.get('mean_july_max_c')} °C"
+    if spec.key == "sunset_spot_nearby":
+        minutes = value.get("nearest_minutes")
+        heading = (
+            f"закат в {round(minutes)} мин пешком"
+            if isinstance(minutes, (int, float))
+            else "закатная точка рядом"
+        )
+        reviews = value.get("reviews") or 0
+        return f"{heading}, подтверждений: {reviews}" if reviews else heading
     if "allowed" in value:
         return "гостей с питомцем принимают" if value["allowed"] else "с питомцем не принимают"
     # Булевы характеристики (в том числе номерные) описываются по value_field
