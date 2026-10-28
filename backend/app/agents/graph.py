@@ -116,7 +116,15 @@ async def node_plan(state: AgentState) -> dict:
         missing = [name for name in spec.tools if name not in available]
 
         if not spec.tools:
-            reason = "инструментов нет — характеристика только из ответа отельера"
+            # Значение поставляется тремя путями: инструмент, ответ отельера и
+            # внешний источник (ingest партнёрских данных). Пустой `tools` сам
+            # по себе не значит «спросим отельера»: у блогерской эмоции вопрос
+            # не задаётся вовсе, и причина должна это отражать.
+            reason = (
+                "инструментов нет — характеристика только из ответа отельера"
+                if spec.question
+                else "инструментов нет — значение приходит из внешнего источника (ingest)"
+            )
         elif missing:
             reason = f"нет инструментов: {', '.join(missing)}"
         else:
@@ -160,7 +168,13 @@ async def node_collect(state: AgentState) -> dict:
     for task in state.get("plan") or []:
         key = task["key"]
         if not task["tools"]:
-            log.append(f"{key}: инструментов нет, спросим отельера")
+            # Тот же третий путь, что и в плане: без вопроса отельер здесь не
+            # при чём — значение приносит внешний ingest.
+            log.append(
+                f"{key}: инструментов нет, спросим отельера"
+                if task.get("question")
+                else f"{key}: инструментов нет — значение приходит из внешнего источника"
+            )
             continue
 
         best_confidence = -1.0

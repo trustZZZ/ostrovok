@@ -1,0 +1,166 @@
+# =============================================================================
+# Демо-стенд за системным nginx сервера.
+#
+# Запуск из ЭТОЙ папки:  docker compose up -d --build
+#
+# Отличия от корневого docker-compose.yml (сам корневой файл не меняется):
+#
+#   1. Наружу публикуется ровно один порт и только на loopback —
+#      127.0.0.1:8081. Занятый на хосте 8080 больше не мешает: внутри
+#      контейнера frontend по-прежнему слушает 8080, но этот порт не
+#      пробрасывается на все интерфейсы.
+#   2. db (5432), backend (8000) и frontend (8080) снаружи недоступны:
+#      у них нет секции ports, только expose — это метаданные для сети
+#      compose, а не публикация на хост.
+#   3. Внешний трафик принимает системный nginx и проксирует на
+#      127.0.0.1:8081 (см. nginx/routely-site.conf).
+#   4. Имя проекта и volume зафиксированы, чтобы переиспользовать уже
+#      собранные характеристики, а не гонять сбор заново.
+#
+# Все пути к коду и данным относительны этой папки, поэтому файл работает
+# и из deploy/demo/, и после копирования папки в другое место репозитория.
+# =============================================================================
+
+name: ostrovok
+
+# Платформа как в корневом файле: иначе на arm64-хосте postgis и GDAL
+# подтягиваются под другую архитектуру и расходятся с гео-библиотеками.
+x-platform: &default-platform linux/amd64
+
+# Корневой .env читаем, чтобы не дублировать ключи LLM и пароли БД.
+# Папка-локальный .env имеет приоритет: он идёт последним.
+x-env-file: &default-env-file
+  - path: ../../.env
+    required: false
+  - path: .env
+    required: false
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    platform: *default-platform
+    restart: unless-stopped
+    env_file: *default-env-file
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-routely}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-routely}
+      POSTGRES_DB: ${POSTGRES_DB:-routely}
+    expose:
+      - "5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../data/seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-routely} -d ${POSTGRES_DB:-routely}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  backend:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    platform: *default-platform
+    restart: unless-stopped
+    env_file: *default-env-file
+    expose:
+      - "8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://routely:routely@db:5432/routely}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.aitunnel.ru/v1}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+      LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-20}
+      USE_MOCK_LLM: ${USE_MOCK_LLM:-1}
+      DEM_PATH: /data/dem.tif
+      BUILDINGS_PATH: /data/buildings.gpkg
+      NOISE_PATH: /data/noise_sources.geojson
+      BEACHES_PATH: /data/beaches.geojson
+      HOTELS_PATH: /data/hotels.geojson
+      GUIDES_PATH: /data/guides
+    volumes:
+      - ../../data:/data:ro
+      - ../../backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request,sys; sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=3).status == 200 else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ../..
+      dockerfile: ./frontend/Dockerfile
+    platform: *default-platform
+    restart: unless-stopped
+    # Единственная публикация: loopback + нестандартный порт.
+    # 127.0.0.1 означает, что порт виден только на самом сервере, где
+    # системный nginx до него и достаёт. Из интернета он недоступен.
+    ports:
+      - "${DEMO_BIND_HOST:-127.0.0.1}:${DEMO_BIND_PORT:-8081}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---- Одноразовые задачи: docker compose --profile tools run --rm <service> ----
+  seed:
+    profiles: ["tools"]
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    platform: *default-platform
+    env_file: *default-env-file
+    environment:
+      USE_MOCK_LLM: "1"
+      DEM_PATH: /data/dem.tif
+      BUILDINGS_PATH: /data/buildings.gpkg
+      NOISE_PATH: /data/noise_sources.geojson
+      BEACHES_PATH: /data/beaches.geojson
+      HOTELS_PATH: /data/hotels.geojson
+      GUIDES_PATH: /data/guides
+      GROUND_TRUTH: /data/ground_truth.csv
+      EVAL_REPORT: /data/eval_report.json
+      # Внутри сети compose localhost — это сам контейнер, поэтому адрес явный.
+      ROUTELY_API: http://backend:8000
+    volumes:
+      - ../../data:/data
+      - ../../scripts:/scripts:ro
+    command: ["python", "/scripts/fetch_data.py"]
+
+  test:
+    profiles: ["tools"]
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile.dev
+    platform: *default-platform
+    environment:
+      USE_MOCK_LLM: "1"
+      DEM_PATH: /data/dem.tif
+      BUILDINGS_PATH: /data/buildings.gpkg
+      NOISE_PATH: /data/noise_sources.geojson
+      BEACHES_PATH: /data/beaches.geojson
+      HOTELS_PATH: /data/hotels.geojson
+    volumes:
+      - ../../data:/data:ro
+
+volumes:
+  pgdata:
+    # Фиксированное имя: если стек уже запускался из корня, том с готовыми
+    # характеристиками переиспользуется. Проверить имя: docker volume ls
+    name: ostrovok_pgdata
